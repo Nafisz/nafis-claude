@@ -475,3 +475,123 @@ textarea {
   .hero { margin-top: 28px; }
   .composer-footer { align-items: stretch; flex-direction: column; }
 }
+
+.error-banner {
+  margin: 0 0 12px;
+  padding: 11px 14px;
+  border: 1px solid #e5b9a7;
+  border-radius: 14px;
+  background: #fff2ec;
+  color: #8a3b22;
+  font-weight: 700;
+}
+
+.typing {
+  width: fit-content;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fffbf4;
+  color: var(--muted);
+  font-weight: 700;
+  animation: pulse 1.15s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 0.55; transform: translateY(0); }
+  to { opacity: 1; transform: translateY(-1px); }
+}
+
+.usage {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.api-card input[type="password"] {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 12px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fbfaf7;
+  color: var(--ink);
+  outline: 0;
+}
+
+.remember-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+button:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.artifact-row {
+  width: 100%;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.artifact-row.active {
+  outline: 2px solid var(--accent-soft);
+  background: #fff9ef;
+}
+
+.artifact-preview {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: #fffdf8;
+  overflow: hidden;
+}
+
+.preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.preview-actions span {
+  display: inline-flex;
+  gap: 7px;
+}
+
+.preview-actions button {
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #ece7df;
+  color: #5d554d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.artifact-preview pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 13px;
+  overflow: auto;
+  color: #433b33;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.inspector.open {
+  box-shadow: inset 3px 0 0 var(--accent-soft);
+}
