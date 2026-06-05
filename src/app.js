@@ -3,6 +3,8 @@ const CONTEXT_CHAR_BUDGET = 3_200_000;
 const SESSION_SUMMARY_TRIGGER = 14;
 const MEMORY_UPDATE_TURN_INTERVAL = 6;
 
+const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
+
 const defaultModels = [
   { id: 'claude-opus-4-8', label: 'Opus 4.8', tier: 'max', detail: 'Reasoning maksimum.' },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', tier: 'max', detail: 'Reasoning mendalam.' },
@@ -82,7 +84,7 @@ const welcomeMessage = {
 };
 
 const initialState = {
-  model: defaultModels[0].id,
+  model: DEFAULT_MODEL_ID,
   tone: 'Sedang',
   apiKey: '',
   apiKeySaved: false,
@@ -102,10 +104,10 @@ const initialState = {
   contextStats: {},
   memoryUpdatedAt: { global: '', projects: {}, sessions: {} },
   conversations: [
-    { id: 1, title: 'Tanpa judul', projectId: null, model: defaultModels[3].id, preview: 'Sesi umum di luar Project', updated: 'Baru saja' },
-    { id: 2, title: 'AI game sederhana vs LLM untuk NPC', projectId: 'game', model: defaultModels[3].id, preview: 'Eksperimen gameplay dan prompt', updated: '2 jam lalu' },
-    { id: 3, title: 'Perbedaan Claude di app vs API usage', projectId: null, model: defaultModels[3].id, preview: 'Catatan umum lintas proyek', updated: 'Kemarin' },
-    { id: 4, title: 'Desain arsitektur yang sudah siap MVP', projectId: 'nova', model: defaultModels[3].id, preview: 'Backend, auth, dan billing', updated: 'Senin' },
+    { id: 1, title: 'Tanpa judul', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Sesi umum di luar Project', updated: 'Baru saja' },
+    { id: 2, title: 'AI game sederhana vs LLM untuk NPC', projectId: 'game', model: DEFAULT_MODEL_ID, preview: 'Eksperimen gameplay dan prompt', updated: '2 jam lalu' },
+    { id: 3, title: 'Perbedaan Claude di app vs API usage', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Catatan umum lintas proyek', updated: 'Kemarin' },
+    { id: 4, title: 'Desain arsitektur yang sudah siap MVP', projectId: 'nova', model: DEFAULT_MODEL_ID, preview: 'Backend, auth, dan billing', updated: 'Senin' },
   ],
   messagesByConversation: {
     1: [welcomeMessage],
@@ -176,11 +178,11 @@ function escapeHtml(value = '') {
 }
 
 function modelById(id) {
-  return defaultModels.find((model) => model.id === id) ?? defaultModels.find((model) => model.id === 'claude-sonnet-4-6') ?? defaultModels[0];
+  return defaultModels.find((model) => model.id === id) ?? defaultModels.find((model) => model.id === DEFAULT_MODEL_ID) ?? defaultModels[0];
 }
 
 function currentModelId() {
-  return currentConversation()?.model || state.model || 'claude-sonnet-4-6';
+  return currentConversation()?.model || state.model || DEFAULT_MODEL_ID;
 }
 
 function projectById(id) {
@@ -205,7 +207,6 @@ function combineProjectMemory(project) {
   return {
     ...project,
     baseMemory: project.memory,
-    generatedMemory,
     systemPrompt: project.systemPrompt || project.memory || '',
     generatedMemory,
     memory: [project.memory, generatedMemory && `Generated memory:\n${generatedMemory}`].filter(Boolean).join('\n\n'),
