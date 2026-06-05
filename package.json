@@ -1,11 +1,12 @@
 {
   "name": "nafis-claude",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Claude-inspired workspace UI with conversations, project memory, skills, and organic tool/file actions.",
+  "description": "Claude-inspired workspace UI with real Claude API proxy, conversations, project memory, skills, and artifacts.",
   "scripts": {
-    "start": "python3 -m http.server 4173",
-    "check": "node --check src/app.js",
-    "build": "npm run check"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check src/app.js",
+    "build": "npm run check",
+    "test": "npm run check"
   }
 }
