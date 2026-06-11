@@ -595,3 +595,155 @@ textarea:disabled {
 .inspector.open {
   box-shadow: inset 3px 0 0 var(--accent-soft);
 }
+
+.memory-manager {
+  position: relative;
+}
+
+.context-meter {
+  height: 8px;
+  margin: 13px 0;
+  border-radius: 999px;
+  background: #eee8dc;
+  overflow: hidden;
+}
+
+.context-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #dca56f);
+}
+
+.memory-list {
+  display: grid;
+  gap: 11px;
+  margin: 0;
+}
+
+.memory-list div {
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbf7ef;
+}
+
+.memory-list dt {
+  margin-bottom: 5px;
+  color: #6b6259;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.memory-list dd {
+  max-height: 130px;
+  margin: 0 0 6px;
+  overflow: auto;
+  color: #433b33;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.memory-list small,
+.memory-hint {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.memory-hint {
+  margin-top: 9px;
+}
+
+.skill-list {
+  display: grid;
+  gap: 8px;
+  margin: 13px 0;
+}
+
+.skill-row {
+  align-items: start;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: #fbf7ef;
+}
+
+.skill-row.selected {
+  border-color: var(--accent-soft);
+  background: #fff8ee;
+}
+
+.skill-row button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.skill-editor {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.skill-editor label {
+  display: grid;
+  gap: 5px;
+  color: #6b6259;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.skill-editor input,
+.skill-editor textarea,
+.memory-editor {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fffdf8;
+  color: var(--ink);
+  outline: 0;
+  font: inherit;
+}
+
+.skill-editor textarea,
+.memory-editor {
+  min-height: 86px;
+  resize: vertical;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+#skill-content-input {
+  min-height: 150px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.editor-actions button {
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: #ece7df;
+  color: #5d554d;
+  font-size: 12px;
+  font-weight: 800;
+}
