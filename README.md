@@ -6,12 +6,12 @@ Prototype UI/UX web app Claude-like yang bisa dipakai dengan Claude API key prib
 
 - Chat streaming via backend proxy lokal ke Claude Messages API.
 - Conversation state milik aplikasi dan tersimpan di `localStorage`.
-- New Chat membuat conversation baru; Continue Chat memuat history conversation yang sama.
+- New Chat membuat conversation baru; Continue Chat memuat history conversation yang sama. Chat juga dapat di-branch dari akhir sesi atau respons tertentu untuk melanjutkan konteks ke arah berbeda; branch otomatis mewarisi Project dan model sumber.
 - Model selector per conversation; history tetap utuh saat model diganti.
-- Project instruction/memory dikirim sebagai `system` prompt.
-- Global/account memory dan Project memory bisa dilihat, diedit, disimpan, disalin, dan diunduh.
-- Skills ala Claude berupa fragmen instruksi Markdown dengan trigger keywords; skill bisa aktif/nonaktif, dilihat, diedit, disalin, diunduh, diduplikasi, atau dibuat baru.
-- Agentic tool loop tersedia hanya untuk Atlassian: Jira dan Confluence.
+- Global/account memory dan Project memory diretrieval per topik lalu dikirim sebagai konteks relevan, tanpa mencampur scope.
+- Memory global/project diperbarui otomatis dalam format Claude-like (`Purpose & context`, `Current state`, `On the horizon`, `Key learnings & principles`, `Approach & patterns`, `Tools & resources`) dan tetap bisa dilihat, diedit, disimpan, disalin, atau diunduh.
+- Skills ala Claude berupa fragmen instruksi Markdown dengan trigger keywords; keyword kosong berarti selalu aktif. Skill bisa aktif/nonaktif, dilihat, diedit, disalin, diunduh, diduplikasi, atau dibuat baru.
+- Agentic tool loop tersedia hanya untuk Atlassian: pencarian/pembacaan Confluence dan Jira, update halaman Confluence, serta create/update/comment Jira. Operasi tulis hanya dijalankan saat diminta eksplisit oleh user.
 - File/artefak yang dihasilkan bisa dibuka, disalin, dan diunduh dari panel Artefak.
 - Token counter memakai `/api/count-tokens` jika API key tersedia.
 

@@ -136,9 +136,15 @@ function loadState() {
 
   try {
     const stored = JSON.parse(raw);
+    const conversations = (stored.conversations || initialState.conversations).map((conversation) => ({
+      ...conversation,
+      model: defaultModels.some((model) => model.id === conversation.model) ? conversation.model : DEFAULT_MODEL_ID,
+    }));
     return {
       ...structuredClone(initialState),
       ...stored,
+      model: defaultModels.some((model) => model.id === stored.model) ? stored.model : DEFAULT_MODEL_ID,
+      conversations,
       apiKey: stored.apiKeySaved ? stored.apiKey || '' : '',
       isSending: false,
       isMemoryUpdating: false,
@@ -195,6 +201,14 @@ function currentConversation() {
 
 function currentMessages() {
   return state.messagesByConversation[state.activeConversation] ?? [];
+}
+
+function conversationById(id) {
+  return state.conversations.find((conversation) => conversation.id === id) || null;
+}
+
+function nextConversationId() {
+  return Math.max(Date.now(), ...state.conversations.map((conversation) => Number(conversation.id) || 0)) + 1;
 }
 
 function generatedProjectMemory(projectId) {
@@ -271,34 +285,14 @@ function updateConversationPreview(prompt) {
 }
 
 function detectActions(prompt, assistantText = '') {
-  const lowerPrompt = prompt.toLowerCase();
-  const skills = activeSkills();
   const actions = [];
+  const fileSkill = activeSkills().find((skill) => skill.id === 'generate-file');
 
-  if (lowerPrompt.includes('jira')) {
-    actions.push({
-      type: 'tool',
-      name: 'Jira search',
-      detail: 'Tool Atlassian Jira tersedia lewat backend jika kredensial server sudah dikonfigurasi.',
-    });
-  }
-
-  if (lowerPrompt.includes('confluence')) {
-    const skill = skills.find((item) => item.id === 'confluence');
-    actions.push({
-      type: 'tool',
-      name: 'Confluence search',
-      detail: skill?.active
-        ? 'Skill aktif. Claude diberi instruksi memakai konteks Confluence bila konektor tersedia.'
-        : 'Skill nonaktif. Aktifkan checkbox Confluence sebelum memakai konektor ini.',
-    });
-  }
-
-  if (/(buat|generate|hasilkan|tulis).*(file|\.md|\.txt|\.json|\.js|dokumen)/i.test(prompt)) {
+  if (fileSkill?.active && /(buat|generate|hasilkan|tulis).*(file|\.md|\.txt|\.json|\.js|dokumen)/i.test(prompt)) {
     actions.push({ type: 'file', name: suggestFileName(prompt), detail: 'Artefak dibuat dari respons assistant dan bisa dibuka/diunduh.' });
   }
 
-  if (assistantText && /(roadmap|prd|brief|spesifikasi|kode|dokumen)/i.test(prompt) && !actions.some((action) => action.type === 'file')) {
+  if (fileSkill?.active && assistantText && /(roadmap|prd|brief|spesifikasi|kode|dokumen)/i.test(prompt) && !actions.some((action) => action.type === 'file')) {
     actions.push({ type: 'file', name: suggestFileName(prompt), detail: 'Output penting disimpan sebagai artefak untuk dipakai ulang.' });
   }
 
@@ -402,27 +396,34 @@ async function refreshTokenCount() {
   }
 }
 
-function shouldUpdateMemories(messages = currentMessages()) {
-  const stats = state.contextStats?.[state.activeConversation] || {};
-  return userTurnCount(messages) - (stats.lastMemoryTurn || 0) >= MEMORY_UPDATE_TURN_INTERVAL;
+function hasHighValueMemorySignal(messages = currentMessages()) {
+  const latestUser = [...messages].reverse().find((message) => message.role === 'user');
+  return /\b(ingat|remember|mulai sekarang|prefer|saya suka|saya tidak suka|jangan lagi|keputusan|diputuskan|final|source of truth|north star|prioritas|constraint|batasan|nama saya|tim saya|project ini)\b/i.test(latestUser?.text || '');
 }
 
-function shouldSummarizeSession(messages = currentMessages()) {
-  const stats = state.contextStats?.[state.activeConversation] || {};
+function shouldUpdateMemories(messages = currentMessages(), conversationId = state.activeConversation) {
+  const stats = state.contextStats?.[conversationId] || {};
+  return hasHighValueMemorySignal(messages)
+    || userTurnCount(messages) - (stats.lastMemoryTurn || 0) >= MEMORY_UPDATE_TURN_INTERVAL;
+}
+
+function shouldSummarizeSession(messages = currentMessages(), conversationId = state.activeConversation) {
+  const stats = state.contextStats?.[conversationId] || {};
   return messages.length - (stats.summarizedThrough || 0) >= SESSION_SUMMARY_TRIGGER;
 }
 
-async function requestMemory(scope, existingMemory) {
+async function requestMemory(scope, existingMemory, context) {
   const response = await fetch('/api/memory', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       apiKey: state.apiKey,
       model: 'claude-haiku-4-5-20251001',
+      maxTokens: scope === 'session' ? 900 : 1800,
       scope,
       existingMemory,
-      project: activeMemory(),
-      messages: currentMessages(),
+      project: context.project,
+      messages: context.messages,
     }),
   });
   const payload = await response.json();
@@ -430,75 +431,79 @@ async function requestMemory(scope, existingMemory) {
   return payload.memory || existingMemory || '';
 }
 
-function markMemoryGenerated(scopes) {
+function markMemoryGenerated(scopes, { conversationId, projectId }) {
   const now = new Date().toISOString();
-  const project = activeMemory();
   state.memoryUpdatedAt = {
     ...state.memoryUpdatedAt,
     global: scopes.includes('global') ? now : state.memoryUpdatedAt?.global || '',
     projects: {
       ...(state.memoryUpdatedAt?.projects || {}),
-      ...(scopes.includes('project') && project ? { [project.id]: now } : {}),
+      ...(scopes.includes('project') && projectId ? { [projectId]: now } : {}),
     },
     sessions: {
       ...(state.memoryUpdatedAt?.sessions || {}),
-      ...(scopes.includes('session') ? { [state.activeConversation]: now } : {}),
+      ...(scopes.includes('session') ? { [conversationId]: now } : {}),
     },
   };
 }
 
 async function generateMemories(scopes = ['session', 'global', 'project'], force = false) {
-  if (state.isMemoryUpdating) return;
-  const messages = currentMessages();
-  if (!force && !shouldUpdateMemories(messages) && !shouldSummarizeSession(messages)) return;
+  if (state.isMemoryUpdating || !state.apiKey) return;
+  const conversationId = state.activeConversation;
+  const messages = [...currentMessages()];
+  const project = activeMemory();
+  const projectId = project?.id || null;
+  const updateDurableMemory = force || shouldUpdateMemories(messages, conversationId);
+  const updateSession = force || shouldSummarizeSession(messages, conversationId);
+  if (!updateDurableMemory && !updateSession) return;
+
+  const jobs = [];
+  if (scopes.includes('session') && updateSession) {
+    jobs.push({ scope: 'session', promise: requestMemory('session', state.sessionSummaries?.[conversationId] || '', { messages, project }) });
+  }
+  if (scopes.includes('global') && updateDurableMemory) {
+    jobs.push({ scope: 'global', promise: requestMemory('global', state.globalMemory, { messages, project }) });
+  }
+  if (project && scopes.includes('project') && updateDurableMemory) {
+    jobs.push({ scope: 'project', promise: requestMemory('project', generatedProjectMemory(projectId), { messages, project }) });
+  }
+  if (!jobs.length) return;
 
   state.isMemoryUpdating = true;
   saveState();
   render();
 
-  const project = activeMemory();
   const completed = [];
-  try {
-    if (scopes.includes('session') && (force || shouldSummarizeSession(messages))) {
-      state.sessionSummaries = {
-        ...state.sessionSummaries,
-        [state.activeConversation]: await requestMemory('session', currentSessionSummary()),
-      };
-      completed.push('session');
+  const failures = [];
+  const results = await Promise.allSettled(jobs.map((job) => job.promise));
+  results.forEach((result, index) => {
+    const scope = jobs[index].scope;
+    if (result.status === 'rejected') {
+      failures.push(result.reason?.message || `${scope} memory gagal.`);
+      return;
     }
+    completed.push(scope);
+    if (scope === 'session') state.sessionSummaries = { ...state.sessionSummaries, [conversationId]: result.value };
+    if (scope === 'global') state.globalMemory = result.value;
+    if (scope === 'project' && projectId) state.projectMemories = { ...state.projectMemories, [projectId]: result.value };
+  });
 
-    if (scopes.includes('global') && (force || shouldUpdateMemories(messages))) {
-      state.globalMemory = await requestMemory('global', state.globalMemory);
-      completed.push('global');
-    }
-
-    if (project && scopes.includes('project') && (force || shouldUpdateMemories(messages))) {
-      state.projectMemories = {
-        ...state.projectMemories,
-        [project.id]: await requestMemory('project', generatedProjectMemory(project.id)),
-      };
-      completed.push('project');
-    }
-
-    if (completed.length) {
-      const stats = state.contextStats?.[state.activeConversation] || {};
-      state.contextStats = {
-        ...state.contextStats,
-        [state.activeConversation]: {
-          ...stats,
-          lastMemoryTurn: userTurnCount(messages),
-          summarizedThrough: messages.length,
-        },
-      };
-      markMemoryGenerated(completed);
-    }
-  } catch (error) {
-    state.error = error.message;
-  } finally {
-    state.isMemoryUpdating = false;
-    saveState();
-    render();
+  if (completed.length) {
+    const stats = state.contextStats?.[conversationId] || {};
+    state.contextStats = {
+      ...state.contextStats,
+      [conversationId]: {
+        ...stats,
+        ...(completed.some((scope) => scope === 'global' || scope === 'project') ? { lastMemoryTurn: userTurnCount(messages) } : {}),
+        ...(completed.includes('session') ? { summarizedThrough: messages.length } : {}),
+      },
+    };
+    markMemoryGenerated(completed, { conversationId, projectId });
   }
+  if (failures.length) state.error = failures.join(' ');
+  state.isMemoryUpdating = false;
+  saveState();
+  render();
 }
 
 function createLocalFallback(prompt) {
@@ -665,6 +670,41 @@ function newConversation() {
   render();
 }
 
+function branchConversation(throughMessageId = null) {
+  if (state.isSending) return;
+  const sourceConversation = currentConversation();
+  const sourceMessages = currentMessages();
+  const id = nextConversationId();
+  let branch;
+  try {
+    branch = globalThis.NafisBranching.createConversationBranch({
+      conversation: sourceConversation,
+      messages: sourceMessages,
+      throughMessageId,
+      id,
+      now: new Date().toISOString(),
+      idFactory: () => crypto.randomUUID(),
+    });
+  } catch (error) {
+    setState({ error: error.message });
+    return;
+  }
+
+  state.conversations = [branch.conversation, ...state.conversations];
+  state.messagesByConversation = { ...state.messagesByConversation, [id]: branch.messages };
+  state.sessionSummaries = { ...state.sessionSummaries, [id]: '' };
+  state.contextStats = { ...state.contextStats, [id]: { lastMemoryTurn: userTurnCount(branch.messages), summarizedThrough: 0 } };
+  state.memoryUpdatedAt = {
+    ...state.memoryUpdatedAt,
+    sessions: { ...(state.memoryUpdatedAt?.sessions || {}), [id]: '' },
+  };
+  state.activeConversation = id;
+  state.activeProject = branch.conversation.projectId ?? null;
+  state.error = '';
+  saveState();
+  render();
+}
+
 function moveConversationToProject(projectId) {
   state.activeProject = projectId;
   state.conversations = state.conversations.map((conversation) => (
@@ -722,6 +762,7 @@ function addCustomSkill() {
     active: true,
     builtin: false,
     description: 'Jelaskan kapan skill ini dipakai.',
+    triggerKeywords: [],
     content: 'Tulis instruksi skill ala Claude Skill di sini: workflow, batasan, output format, dan contoh pemakaian.',
   });
 }
@@ -732,7 +773,11 @@ function saveSkillEditor() {
   const name = document.querySelector('#skill-name-input')?.value.trim() || skill.name;
   const description = document.querySelector('#skill-description-input')?.value.trim() || '';
   const content = document.querySelector('#skill-content-input')?.value.trim() || '';
-  upsertSkill({ ...skill, name, description, content });
+  const triggerKeywords = (document.querySelector('#skill-keywords-input')?.value || '')
+    .split(',')
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
+  upsertSkill({ ...skill, name, description, content, triggerKeywords });
 }
 
 function duplicateSelectedSkill() {
@@ -795,8 +840,8 @@ function renderSidebar() {
     const active = conversation.id === state.activeConversation ? 'active' : '';
     return `
       <button class="recent-item ${active}" data-conversation="${conversation.id}">
-        <span>${escapeHtml(conversation.title)}</span>
-        <small>${escapeHtml(project ? project.name : 'Di luar Project')} • ${escapeHtml(conversation.updated)}</small>
+        <span>${conversation.parentConversationId ? '<b class="branch-mark">⑂</b>' : ''}${escapeHtml(conversation.title)}</span>
+        <small>${escapeHtml(project ? project.name : 'Di luar Project')} • ${conversation.parentConversationId ? 'Branch • ' : ''}${escapeHtml(conversation.updated)}</small>
       </button>
     `;
   }).join('');
@@ -877,6 +922,8 @@ function renderActions(message) {
 
 function renderChat() {
   const memory = activeMemory();
+  const conversation = currentConversation();
+  const parentConversation = conversationById(conversation?.parentConversationId);
   const messages = currentMessages().map((message) => `
     <article class="message ${escapeHtml(message.role)}">
       <div class="avatar">${message.role === 'assistant' ? '✺' : 'S'}</div>
@@ -884,6 +931,7 @@ function renderChat() {
         <p>${escapeHtml(message.text)}</p>
         ${message.usage ? `<small class="usage">${escapeHtml(message.model || state.model)} · input ${message.usage.input_tokens ?? 0} · output ${message.usage.output_tokens ?? 0}</small>` : ''}
         ${renderActions(message)}
+        ${message.role === 'assistant' && !state.isSending ? `<button class="branch-message" data-branch-message="${message.id}" title="Buat sesi baru dari respons ini">⑂ Branch dari sini</button>` : ''}
       </div>
     </article>
   `).join('');
@@ -892,7 +940,7 @@ function renderChat() {
     <main class="workspace">
       <header class="topbar">
         <div class="plan-pill">API pribadi · <span>${state.apiKey ? 'Key siap' : 'Masukkan key'}</span></div>
-        <button class="ghost-button" data-action="focus-prompt">👻</button>
+        <div class="topbar-actions"><button class="branch-chat" data-action="branch-chat" ${state.isSending ? 'disabled' : ''}>⑂ Branch chat</button><button class="ghost-button" data-action="focus-prompt">👻</button></div>
       </header>
 
       <section class="hero">
@@ -902,6 +950,7 @@ function renderChat() {
       </section>
 
       <section class="chat-card" aria-label="Area percakapan">
+        ${parentConversation ? `<div class="branch-banner">⑂ Branch dari <button data-conversation="${parentConversation.id}">${escapeHtml(parentConversation.title)}</button> · Project dan riwayat sebelum titik branch diwarisi.</div>` : ''}
         <div class="messages" id="messages">${messages}${state.isSending ? '<div class="typing">Claude sedang berpikir…</div>' : ''}</div>
         ${state.error ? `<div class="error-banner">${escapeHtml(state.error)}</div>` : ''}
         <div class="composer">
@@ -1001,13 +1050,13 @@ function renderInspector() {
         <div class="panel-heading"><p>Model</p><strong>${escapeHtml(modelById(currentModelId()).label)}</strong><small>${escapeHtml(modelById(currentModelId()).detail)}</small></div>
       </div>
       <div class="inspector-card skill-manager">
-        <div class="panel-heading"><p>Skills</p><strong>Claude-like editable skills</strong><small>Aktifkan, lihat, salin, unduh, edit, atau tambah skill kustom.</small></div>
+        <div class="panel-heading"><p>Skills</p><strong>Claude-like editable skills</strong><small>Skill aktif dipicu oleh keyword; tanpa keyword, skill selalu dikirim ke Claude.</small></div>
         <div class="skill-list">${skillRows}</div>
         ${skill ? `
           <div class="skill-editor">
             <label>Nama skill<input id="skill-name-input" value="${escapeHtml(skill.name)}" /></label>
             <label>Deskripsi<textarea id="skill-description-input">${escapeHtml(skill.description || '')}</textarea></label>
-            <label>Trigger keywords<input id="skill-keywords-input" value="${escapeHtml((skill.triggerKeywords || []).join(', '))}" /></label>
+            <label>Trigger keywords <small>Kosong = selalu aktif</small><input id="skill-keywords-input" value="${escapeHtml((skill.triggerKeywords || []).join(', '))}" /></label>
             <label>Instruksi skill<textarea id="skill-content-input">${escapeHtml(skill.content || '')}</textarea></label>
             <div class="editor-actions">
               <button data-action="save-skill">Simpan</button>
@@ -1050,6 +1099,12 @@ function handleClick(event) {
   const downloadButton = event.target.closest('[data-download]');
   const copyButton = event.target.closest('[data-copy]');
   const skillSelectButton = event.target.closest('[data-skill-select]');
+  const branchMessageButton = event.target.closest('[data-branch-message]');
+
+  if (branchMessageButton) {
+    branchConversation(branchMessageButton.dataset.branchMessage);
+    return;
+  }
 
   if (conversationButton) {
     const activeConversation = Number(conversationButton.dataset.conversation);
@@ -1092,6 +1147,7 @@ function handleClick(event) {
 
   const action = actionButton.dataset.action;
   if (action === 'new-chat') newConversation();
+  if (action === 'branch-chat') branchConversation();
   if (action === 'send-message') addMessage();
   if (action === 'toggle-skills') setState({ showSkills: !state.showSkills });
   if (action === 'show-projects') document.querySelector('#project-rail')?.scrollIntoView({ behavior: 'smooth' });
