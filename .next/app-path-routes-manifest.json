@@ -1,0 +1,18 @@
+{
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/api/artifacts/[id]/download/route": "/api/artifacts/[id]/download",
+  "/api/artifacts/route": "/api/artifacts",
+  "/api/bootstrap/route": "/api/bootstrap",
+  "/api/chat/route": "/api/chat",
+  "/api/files/route": "/api/files",
+  "/api/memory/route": "/api/memory",
+  "/api/projects/[id]/route": "/api/projects/[id]",
+  "/api/projects/route": "/api/projects",
+  "/api/sessions/[id]/route": "/api/sessions/[id]",
+  "/api/sessions/route": "/api/sessions",
+  "/api/tools/approve/route": "/api/tools/approve",
+  "/api/tools/rovo/route": "/api/tools/rovo",
+  "/favicon.ico/route": "/favicon.ico",
+  "/page": "/"
+}

@@ -10,7 +10,7 @@ Prototype UI/UX web app Claude-like yang bisa dipakai dengan Claude API key prib
 - Model selector per conversation; history tetap utuh saat model diganti.
 - Global/account memory dan Project memory diretrieval per topik lalu dikirim sebagai konteks relevan, tanpa mencampur scope.
 - Memory global/project diperbarui otomatis dalam format Claude-like (`Purpose & context`, `Current state`, `On the horizon`, `Key learnings & principles`, `Approach & patterns`, `Tools & resources`) dan tetap bisa dilihat, diedit, disimpan, disalin, atau diunduh.
-- Skills ala Claude berupa fragmen instruksi Markdown dengan trigger keywords; keyword kosong berarti selalu aktif. Skill bisa aktif/nonaktif, dilihat, diedit, disalin, diunduh, diduplikasi, atau dibuat baru.
+- Skills ala Claude disimpan sebagai file `.md` dengan metadata dan instruksi Markdown; keyword kosong berarti selalu aktif. Detail skill dapat dilihat sebagai rendered Markdown atau raw source, serta diunggah, diganti, dan diunduh dalam format `.md`.
 - Agentic tool loop tersedia hanya untuk Atlassian: pencarian/pembacaan Confluence dan Jira, update halaman Confluence, serta create/update/comment Jira. Operasi tulis hanya dijalankan saat diminta eksplisit oleh user.
 - File/artefak yang dihasilkan bisa dibuka, disalin, dan diunduh dari panel Artefak.
 - Token counter memakai `/api/count-tokens` jika API key tersedia.
@@ -29,11 +29,13 @@ Lalu buka <http://localhost:4173>.
 ANTHROPIC_API_KEY="sk-ant-..." npm run start
 ```
 
-Atau isi API key dari panel kanan aplikasi.
+Atau isi API key dari menu Pengaturan aplikasi.
 
 ### Atlassian tools
 
-Tools yang disediakan hanya Jira dan Confluence. Untuk mengaktifkan akses nyata, jalankan server dengan:
+Tools yang disediakan hanya Jira dan Confluence. Koneksi dapat dikelola langsung dari `Customize > Connectors` menggunakan site URL, email, dan API token Atlassian. Token yang dimasukkan dari UI hanya disimpan di memori proses server dan hilang saat server berhenti.
+
+Sebagai alternatif, koneksi dapat dikonfigurasi saat server dijalankan:
 
 ```bash
 ATLASSIAN_BASE_URL="https://your-domain.atlassian.net" \

@@ -1,0 +1,106 @@
+{
+  "projects": [
+    {
+      "id": "proj_m6GaKrWGcD54",
+      "name": "New Claude Project",
+      "description": "Personal workspace project",
+      "instructions": "Use this project context carefully and keep outputs practical.",
+      "archived": false,
+      "activeSkillIds": [
+        "skill_prd_writer",
+        "skill_atlassian_operator"
+      ],
+      "createdAt": "2026-06-03T11:18:22.714Z",
+      "updatedAt": "2026-06-03T11:18:22.714Z"
+    },
+    {
+      "id": "proj_xW3JpIMAxNIz",
+      "name": "Personal Claude Workspace",
+      "description": "Workspace utama untuk chat Claude API, memory, file, skills, dan Atlassian tools.",
+      "instructions": "Bantu user bekerja secara praktis. Gunakan memory dan file project hanya saat relevan. Untuk aksi Jira/Confluence yang menulis data, minta approval terlebih dahulu.",
+      "archived": false,
+      "activeSkillIds": [
+        "skill_prd_writer",
+        "skill_atlassian_operator"
+      ],
+      "createdAt": "2026-06-03T11:05:35.156Z",
+      "updatedAt": "2026-06-03T11:05:35.156Z"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "sess_kHAQ1m18fRV-",
+      "projectId": "proj_xW3JpIMAxNIz",
+      "title": "New chat",
+      "summary": "",
+      "messageIds": [],
+      "artifactIds": [],
+      "fileIds": [],
+      "createdAt": "2026-06-03T11:18:16.446Z",
+      "updatedAt": "2026-06-03T11:18:16.446Z"
+    },
+    {
+      "id": "sess_nbjVl6NJZs2C",
+      "projectId": "proj_xW3JpIMAxNIz",
+      "title": "New chat",
+      "summary": "",
+      "messageIds": [],
+      "artifactIds": [],
+      "fileIds": [],
+      "createdAt": "2026-06-03T11:18:11.558Z",
+      "updatedAt": "2026-06-03T11:18:11.558Z"
+    },
+    {
+      "id": "sess_UW6qUadyfTPh",
+      "projectId": "proj_xW3JpIMAxNIz",
+      "title": "Welcome session",
+      "summary": "Initial seeded session.",
+      "messageIds": [
+        "msg_ZyJkYyHP9uJt"
+      ],
+      "artifactIds": [],
+      "fileIds": [],
+      "createdAt": "2026-06-03T11:05:35.156Z",
+      "updatedAt": "2026-06-03T11:05:35.156Z"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg_ZyJkYyHP9uJt",
+      "sessionId": "sess_UW6qUadyfTPh",
+      "role": "assistant",
+      "content": "Claude-like local workspace is ready. Add ANTHROPIC_API_KEY in .env.local, then start a chat, upload files, create memory, or generate a Markdown artifact.",
+      "fileIds": [],
+      "toolInvocationIds": [],
+      "createdAt": "2026-06-03T11:05:35.156Z"
+    }
+  ],
+  "memories": [],
+  "files": [],
+  "skills": [
+    {
+      "id": "skill_prd_writer",
+      "name": "PRD Writer",
+      "description": "Structure requirements, acceptance criteria, risks, and milestones into Markdown.",
+      "version": "1.0.0",
+      "source": "local",
+      "instructions": "When the user asks for product requirements, produce concise PRDs with scope, requirements, risks, and acceptance criteria. Prefer Markdown artifacts for durable output.",
+      "enabled": true,
+      "apiSkill": null,
+      "createdAt": "2026-06-03T11:05:35.156Z"
+    },
+    {
+      "id": "skill_atlassian_operator",
+      "name": "Atlassian Operator",
+      "description": "Use Jira and Confluence carefully through approval-gated tool calls.",
+      "version": "1.0.0",
+      "source": "local",
+      "instructions": "Use Atlassian tools for searching and reading. For creating or updating Jira/Confluence, explain the proposed write and wait for approval.",
+      "enabled": true,
+      "apiSkill": null,
+      "createdAt": "2026-06-03T11:05:35.156Z"
+    }
+  ],
+  "artifacts": [],
+  "toolInvocations": []
+}

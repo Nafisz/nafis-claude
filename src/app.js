@@ -1,9 +1,19 @@
+import { marked } from '/node_modules/marked/lib/marked.esm.js';
+
 const STORAGE_KEY = 'nafisClaudeWorkspace:v2';
 const CONTEXT_CHAR_BUDGET = 3_200_000;
 const SESSION_SUMMARY_TRIGGER = 14;
 const MEMORY_UPDATE_TURN_INTERVAL = 6;
 
 const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
+const MEMORY_SECTION_TITLES = [
+  'Purpose & context',
+  'Current state',
+  'On the horizon',
+  'Key learnings & principles',
+  'Approach & patterns',
+  'Tools & resources',
+];
 
 const defaultModels = [
   { id: 'claude-opus-4-8', label: 'Opus 4.8', tier: 'max', detail: 'Reasoning maksimum.' },
@@ -79,7 +89,7 @@ const defaultProjects = [
 const welcomeMessage = {
   id: crypto.randomUUID(),
   role: 'assistant',
-  text: 'Malam, siffan. Saya siap dipakai seperti workspace Claude: chat, Project memory, skill, dan artefak file. Isi API key lalu mulai bertanya.',
+  text: 'Malam, siffan. Saya siap membantu lewat chat, memori proyek, skill, dan artefak file.',
   createdAt: new Date().toISOString(),
 };
 
@@ -88,11 +98,26 @@ const initialState = {
   tone: 'Sedang',
   apiKey: '',
   apiKeySaved: false,
+  view: 'chat',
+  settingsOpen: false,
+  settingsSection: 'general',
+  sidebarCollapsed: false,
+  profile: { fullName: 'nafis', callName: 'nafis', work: '' },
+  customProjects: [],
   activeProject: null,
   activeConversation: 1,
   activeArtifact: null,
   activeSkill: 'generate-file',
-  showSkills: true,
+  skillViewMode: 'preview',
+  skillFileError: '',
+  customizeSection: 'skills',
+  skillModalMode: null,
+  uninstalledSkillIds: [],
+  connectorStatus: { loading: false, connected: false, baseUrl: '', email: '', source: '', displayName: '', checkedAt: '', error: '' },
+  connectorBusy: '',
+  projectMemoryEditing: false,
+  memoryModalScope: null,
+  memoryModalEditing: false,
   isSending: false,
   isMemoryUpdating: false,
   streamingMessageId: null,
@@ -104,7 +129,7 @@ const initialState = {
   contextStats: {},
   memoryUpdatedAt: { global: '', projects: {}, sessions: {} },
   conversations: [
-    { id: 1, title: 'Tanpa judul', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Sesi umum di luar Project', updated: 'Baru saja' },
+    { id: 1, title: 'Tanpa judul', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Sesi mandiri', updated: 'Baru saja' },
     { id: 2, title: 'AI game sederhana vs LLM untuk NPC', projectId: 'game', model: DEFAULT_MODEL_ID, preview: 'Eksperimen gameplay dan prompt', updated: '2 jam lalu' },
     { id: 3, title: 'Perbedaan Claude di app vs API usage', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Catatan umum lintas proyek', updated: 'Kemarin' },
     { id: 4, title: 'Desain arsitektur yang sudah siap MVP', projectId: 'nova', model: DEFAULT_MODEL_ID, preview: 'Backend, auth, dan billing', updated: 'Senin' },
@@ -156,6 +181,22 @@ function loadState() {
       contextStats: stored.contextStats || {},
       memoryUpdatedAt: stored.memoryUpdatedAt || { global: '', projects: {}, sessions: {} },
       activeSkill: stored.activeSkill || 'generate-file',
+      skillViewMode: stored.skillViewMode === 'raw' ? 'raw' : 'preview',
+      skillFileError: '',
+      customizeSection: stored.customizeSection === 'connectors' ? 'connectors' : 'skills',
+      view: ['chat', 'projects', 'project', 'customize', 'artifacts'].includes(stored.view) ? stored.view : 'chat',
+      settingsOpen: false,
+      settingsSection: stored.settingsSection || 'general',
+      sidebarCollapsed: Boolean(stored.sidebarCollapsed),
+      profile: { ...initialState.profile, ...(stored.profile || {}) },
+      customProjects: stored.customProjects || [],
+      skillModalMode: null,
+      uninstalledSkillIds: stored.uninstalledSkillIds || [],
+      connectorStatus: { ...initialState.connectorStatus },
+      connectorBusy: '',
+      projectMemoryEditing: false,
+      memoryModalScope: null,
+      memoryModalEditing: false,
     };
   } catch {
     return structuredClone(initialState);
@@ -163,8 +204,9 @@ function loadState() {
 }
 
 function saveState() {
+  const { connectorStatus, connectorBusy, skillFileError, ...persistableState } = state;
   const persisted = {
-    ...state,
+    ...persistableState,
     apiKey: state.apiKeySaved ? state.apiKey : '',
     isSending: false,
     isMemoryUpdating: false,
@@ -192,7 +234,11 @@ function currentModelId() {
 }
 
 function projectById(id) {
-  return defaultProjects.find((project) => project.id === id) ?? null;
+  return [...defaultProjects, ...(state.customProjects || [])].find((project) => project.id === id) ?? null;
+}
+
+function allProjects() {
+  return [...defaultProjects, ...(state.customProjects || [])];
 }
 
 function currentConversation() {
@@ -235,10 +281,11 @@ function activeMemory() {
 
 function activeSkills() {
   const storedSkills = state.skills || [];
+  const uninstalledSkillIds = new Set(state.uninstalledSkillIds || []);
   const builtinIds = defaultSkills.map((skill) => skill.id);
   const mergedBuiltins = defaultSkills.map((skill) => ({ ...skill, ...(storedSkills.find((item) => item.id === skill.id) || {}) }));
   const customSkills = storedSkills.filter((skill) => !builtinIds.includes(skill.id));
-  return [...mergedBuiltins, ...customSkills];
+  return [...mergedBuiltins, ...customSkills].filter((skill) => !uninstalledSkillIds.has(skill.id));
 }
 
 function selectedSkill() {
@@ -247,17 +294,48 @@ function selectedSkill() {
 
 function skillAsMarkdown(skill) {
   return [
+    '---',
+    `name: ${JSON.stringify(skill.name || 'Untitled skill')}`,
+    `description: ${JSON.stringify(skill.description || '')}`,
+    `trigger_keywords: ${JSON.stringify(skill.triggerKeywords || [])}`,
+    `active: ${skill.active ? 'true' : 'false'}`,
+    '---',
+    '',
     `# ${skill.name}`,
     '',
-    `Active: ${skill.active ? 'yes' : 'no'}`,
-    `Trigger keywords: ${(skill.triggerKeywords || []).join(', ') || '-'}`,
-    '',
-    '## Description',
-    skill.description || '-',
-    '',
-    '## Instructions',
     skill.content || '-',
   ].join('\n');
+}
+
+function sanitizeMarkdownHtml(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  template.content.querySelectorAll('script, style, iframe, object, embed, form').forEach((element) => element.remove());
+  template.content.querySelectorAll('*').forEach((element) => {
+    [...element.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim().toLowerCase();
+      if (name.startsWith('on') || ((name === 'href' || name === 'src') && value.startsWith('javascript:'))) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+    if (element.tagName === 'A') {
+      element.setAttribute('target', '_blank');
+      element.setAttribute('rel', 'noreferrer noopener');
+    }
+  });
+  return template.innerHTML;
+}
+
+function renderMarkdown(source = '') {
+  return sanitizeMarkdownHtml(marked.parse(source, {
+    breaks: true,
+    gfm: true,
+  }));
+}
+
+function skillMarkdownBody(skill) {
+  return parseFrontmatter(skillAsMarkdown(skill)).body;
 }
 
 function setState(patch, persist = true) {
@@ -511,10 +589,87 @@ function createLocalFallback(prompt) {
   const actions = detectActions(prompt);
   const text = [
     'Mode lokal aktif karena API key belum tersedia atau request gagal.',
-    memory ? `Memori Project yang dipakai: ${memory.name} — ${memory.memory}` : 'Sesi ini berjalan di luar Project.',
-    'Setelah API key Claude dipasang, jawaban akan datang dari backend proxy `/api/chat-stream` dan model Claude yang dipilih.',
-  ].join('\n\n');
+    memory ? `Memori proyek yang dipakai: ${memory.name} — ${memory.memory}` : '',
+    'Tambahkan API key Claude melalui Pengaturan agar jawaban datang dari backend proxy `/api/chat-stream` dan model yang dipilih.',
+  ].filter(Boolean).join('\n\n');
   return { text, actions };
+}
+
+function setConnectorState(patch) {
+  state = {
+    ...state,
+    connectorStatus: { ...state.connectorStatus, ...patch },
+  };
+  render();
+}
+
+async function connectorRequest(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { 'content-type': 'application/json', ...(options.headers || {}) },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Connector request gagal (${response.status}).`);
+  return data;
+}
+
+async function loadAtlassianConnectorStatus() {
+  setConnectorState({ loading: true, error: '' });
+  try {
+    const status = await connectorRequest('/api/connectors/atlassian');
+    setConnectorState({ ...status, loading: false, error: '' });
+  } catch (error) {
+    setConnectorState({ loading: false, error: error.message });
+  }
+}
+
+async function connectAtlassian() {
+  const baseUrl = document.querySelector('#atlassian-base-url')?.value.trim() || '';
+  const email = document.querySelector('#atlassian-email')?.value.trim() || '';
+  const apiToken = document.querySelector('#atlassian-api-token')?.value.trim() || '';
+  if (!baseUrl || !email || !apiToken) {
+    setConnectorState({ error: 'Isi site URL, email, dan API token terlebih dahulu.' });
+    return;
+  }
+  state.connectorBusy = 'connect';
+  setConnectorState({ error: '' });
+  try {
+    const status = await connectorRequest('/api/connectors/atlassian/connect', {
+      method: 'POST',
+      body: JSON.stringify({ baseUrl, email, apiToken }),
+    });
+    state.connectorBusy = '';
+    setConnectorState({ ...status, loading: false, error: '' });
+  } catch (error) {
+    state.connectorBusy = '';
+    setConnectorState({ error: error.message });
+  }
+}
+
+async function testAtlassianConnector() {
+  state.connectorBusy = 'test';
+  setConnectorState({ error: '' });
+  try {
+    const status = await connectorRequest('/api/connectors/atlassian/test', { method: 'POST', body: '{}' });
+    state.connectorBusy = '';
+    setConnectorState({ ...status, error: '' });
+  } catch (error) {
+    state.connectorBusy = '';
+    setConnectorState({ error: error.message });
+  }
+}
+
+async function disconnectAtlassian() {
+  state.connectorBusy = 'disconnect';
+  setConnectorState({ error: '' });
+  try {
+    const status = await connectorRequest('/api/connectors/atlassian/disconnect', { method: 'POST', body: '{}' });
+    state.connectorBusy = '';
+    setConnectorState({ ...status, displayName: '', checkedAt: '', error: '' });
+  } catch (error) {
+    state.connectorBusy = '';
+    setConnectorState({ error: error.message });
+  }
 }
 
 async function requestClaude(prompt, assistantId, conversationId) {
@@ -659,13 +814,16 @@ async function addMessage() {
 
 function newConversation() {
   const id = Date.now();
-  state.conversations = [{ id, title: 'Tanpa judul', projectId: state.activeProject, model: currentModelId(), preview: 'Sesi baru', updated: 'Baru saja' }, ...state.conversations];
+  state.conversations = [{ id, title: 'Tanpa judul', projectId: null, model: currentModelId(), preview: 'Sesi baru', updated: 'Baru saja' }, ...state.conversations];
   state.messagesByConversation[id] = [{
     ...welcomeMessage,
     id: crypto.randomUUID(),
-    text: state.activeProject ? `Sesi baru di Project ${activeMemory()?.name}.` : 'Sesi baru di luar Project. Apa yang bisa saya bantu?',
+    text: 'Apa yang bisa saya bantu?',
   }];
   state.activeConversation = id;
+  state.activeProject = null;
+  state.view = 'chat';
+  state.settingsOpen = false;
   saveState();
   render();
 }
@@ -700,6 +858,8 @@ function branchConversation(throughMessageId = null) {
   };
   state.activeConversation = id;
   state.activeProject = branch.conversation.projectId ?? null;
+  state.view = 'chat';
+  state.settingsOpen = false;
   state.error = '';
   saveState();
   render();
@@ -745,461 +905,1132 @@ function copyText(content) {
   navigator.clipboard.writeText(content);
 }
 
+function focusSkillModalNameInput() {
+  queueMicrotask(() => {
+    const input = document.querySelector('#skill-modal-name');
+    input?.focus();
+    input?.select();
+  });
+}
+
 function upsertSkill(nextSkill) {
   const skills = activeSkills();
   const exists = skills.some((skill) => skill.id === nextSkill.id);
   const nextSkills = exists
     ? skills.map((skill) => (skill.id === nextSkill.id ? { ...skill, ...nextSkill } : skill))
     : [...skills, nextSkill];
-  setState({ skills: nextSkills, activeSkill: nextSkill.id });
-}
-
-function addCustomSkill() {
-  const id = `custom-${Date.now()}`;
-  upsertSkill({
-    id,
-    name: 'Skill baru',
-    active: true,
-    builtin: false,
-    description: 'Jelaskan kapan skill ini dipakai.',
-    triggerKeywords: [],
-    content: 'Tulis instruksi skill ala Claude Skill di sini: workflow, batasan, output format, dan contoh pemakaian.',
+  setState({
+    skills: nextSkills,
+    activeSkill: nextSkill.id,
+    skillModalMode: null,
+    uninstalledSkillIds: (state.uninstalledSkillIds || []).filter((id) => id !== nextSkill.id),
   });
 }
 
-function saveSkillEditor() {
-  const skill = selectedSkill();
-  if (!skill) return;
-  const name = document.querySelector('#skill-name-input')?.value.trim() || skill.name;
-  const description = document.querySelector('#skill-description-input')?.value.trim() || '';
-  const content = document.querySelector('#skill-content-input')?.value.trim() || '';
-  const triggerKeywords = (document.querySelector('#skill-keywords-input')?.value || '')
+function openSkillModal(mode) {
+  setState({ skillModalMode: mode });
+  focusSkillModalNameInput();
+}
+
+function closeSkillModal() {
+  setState({ skillModalMode: null });
+}
+
+function saveSkillModal() {
+  const existingSkill = state.skillModalMode === 'edit' ? selectedSkill() : null;
+  const name = document.querySelector('#skill-modal-name')?.value.trim() || '';
+  const description = document.querySelector('#skill-modal-description')?.value.trim() || '';
+  const content = document.querySelector('#skill-modal-instructions')?.value.trim() || '';
+  if (!name || !description || !content) return;
+
+  upsertSkill({
+    id: existingSkill?.id || `custom-${Date.now()}`,
+    name,
+    active: existingSkill?.active ?? true,
+    builtin: existingSkill?.builtin ?? false,
+    description,
+    triggerKeywords: existingSkill?.triggerKeywords || [],
+    content,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function updateSkillModalSubmitState() {
+  const submitButton = document.querySelector('[data-action="save-skill-modal"]');
+  if (!submitButton) return;
+  const fields = [
+    document.querySelector('#skill-modal-name')?.value.trim(),
+    document.querySelector('#skill-modal-description')?.value.trim(),
+    document.querySelector('#skill-modal-instructions')?.value.trim(),
+  ];
+  submitButton.disabled = fields.some((value) => !value);
+}
+
+function stripWrappingQuotes(value = '') {
+  return value.trim().replace(/^(['"])(.*)\1$/, '$2');
+}
+
+function parseFrontmatter(source) {
+  const match = source.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+  if (!match) return { attributes: {}, body: source };
+
+  const attributes = {};
+  match[1].split(/\r?\n/).forEach((line) => {
+    const property = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
+    if (!property) return;
+    attributes[property[1].toLowerCase()] = stripWrappingQuotes(property[2]);
+  });
+  return { attributes, body: source.slice(match[0].length) };
+}
+
+function extractMarkdownSection(source, heading) {
+  const pattern = new RegExp(`(?:^|\\n)##\\s+${heading}\\s*\\r?\\n([\\s\\S]*?)(?=\\r?\\n##\\s+|$)`, 'i');
+  return source.match(pattern)?.[1]?.trim() || '';
+}
+
+function parseTriggerKeywords(value = '') {
+  return value
+    .replace(/^\[|\]$/g, '')
     .split(',')
-    .map((keyword) => keyword.trim())
-    .filter(Boolean);
-  upsertSkill({ ...skill, name, description, content, triggerKeywords });
+    .map((keyword) => stripWrappingQuotes(keyword))
+    .filter((keyword) => keyword && keyword !== '-');
 }
 
-function duplicateSelectedSkill() {
-  const skill = selectedSkill();
-  if (!skill) return;
-  upsertSkill({
-    ...skill,
+function parseUploadedSkill(fileName, source) {
+  const normalized = source.replace(/^\uFEFF/, '').trim();
+  const { attributes, body } = parseFrontmatter(normalized);
+  const title = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  const fallbackName = fileName.replace(/\.md$/i, '').replace(/[-_]+/g, ' ').trim();
+  const description = attributes.description || extractMarkdownSection(body, 'Description');
+  const instructions = extractMarkdownSection(body, 'Instructions')
+    || body
+      .replace(/^#\s+.+\r?\n?/, '')
+      .replace(/^Active:\s*.+$/gim, '')
+      .replace(/^Trigger keywords:\s*.+$/gim, '')
+      .trim();
+  const triggerLine = body.match(/^Trigger keywords:\s*(.+)$/im)?.[1] || '';
+  const triggerKeywords = parseTriggerKeywords(
+    attributes.trigger_keywords || attributes.triggers || triggerLine,
+  );
+
+  return {
     id: `custom-${Date.now()}`,
-    name: `${skill.name} copy`,
+    name: attributes.name || title || fallbackName || 'Imported skill',
+    active: !/^no|false$/i.test(attributes.active || body.match(/^Active:\s*(.+)$/im)?.[1] || ''),
     builtin: false,
-    active: true,
+    description: description || 'Skill imported from a local file.',
+    triggerKeywords,
+    content: instructions || normalized || 'Add skill instructions here.',
+  };
+}
+
+async function importSkillFile(file) {
+  if (!file) return;
+  if (!/\.md$/i.test(file.name)) {
+    setState({ skillFileError: 'Skill harus diunggah sebagai file Markdown (.md).' }, false);
+    return;
+  }
+  const content = await file.text();
+  state.skillFileError = '';
+  upsertSkill(parseUploadedSkill(file.name, content));
+}
+
+async function replaceSelectedSkillFile(file) {
+  const skill = selectedSkill();
+  if (!skill || !file) return;
+  if (!/\.md$/i.test(file.name)) {
+    setState({ skillFileError: 'Skill pengganti harus berupa file Markdown (.md).' }, false);
+    return;
+  }
+  const content = await file.text();
+  const replacement = parseUploadedSkill(file.name, content);
+  state.skillFileError = '';
+  upsertSkill({
+    ...replacement,
+    id: skill.id,
+    builtin: skill.builtin,
+    active: skill.active,
   });
 }
 
-function deleteSelectedSkill() {
+function uninstallSelectedSkill() {
   const skill = selectedSkill();
-  if (!skill || skill.builtin) return;
+  if (!skill) return;
   const remaining = activeSkills().filter((item) => item.id !== skill.id);
-  setState({ skills: remaining, activeSkill: remaining[0]?.id || defaultSkills[0].id });
+  setState({
+    skills: (state.skills || []).filter((item) => item.id !== skill.id),
+    uninstalledSkillIds: [...new Set([...(state.uninstalledSkillIds || []), skill.id])],
+    activeSkill: remaining[0]?.id || null,
+  });
 }
 
-function saveMemoryEditors() {
-  const project = activeMemory();
-  const globalMemory = document.querySelector('#global-memory-editor')?.value.trim() || '';
-  const projectMemory = document.querySelector('#project-memory-editor')?.value.trim() || '';
-  const now = new Date().toISOString();
-  state.globalMemory = globalMemory;
-  state.memoryUpdatedAt = {
-    ...state.memoryUpdatedAt,
-    global: now,
-    projects: {
-      ...(state.memoryUpdatedAt?.projects || {}),
-      ...(project ? { [project.id]: now } : {}),
-    },
-    sessions: state.memoryUpdatedAt?.sessions || {},
-  };
-  if (project) {
-    state.projectMemories = { ...state.projectMemories, [project.id]: projectMemory };
-  }
-  saveState();
-  render();
+function useSelectedSkillInChat(edit = false) {
+  const skill = selectedSkill();
+  if (!skill) return;
+  const prompt = edit
+    ? `Help me improve the "${skill.name}" skill instructions:\n\n${skill.content}`
+    : `Use the "${skill.name}" skill for this request:`;
+  focusPrompt(prompt);
 }
 
-function currentMemoryMarkdown() {
-  const project = activeMemory();
-  return [
-    '# Memory',
-    '',
-    '## Global/account memory',
-    document.querySelector('#global-memory-editor')?.value.trim() || state.globalMemory || '-',
-    '',
-    `## Project memory: ${project?.name || 'Di luar Project'}`,
-    document.querySelector('#project-memory-editor')?.value.trim() || project?.generatedMemory || '-',
-  ].join('\n');
+function icon(name, className = '') {
+  return `<span class="material-symbols-outlined ${className}" aria-hidden="true">${name}</span>`;
 }
 
-function renderSidebar() {
-  const recentItems = state.conversations.map((conversation) => {
-    const project = projectById(conversation.projectId);
-    const active = conversation.id === state.activeConversation ? 'active' : '';
-    return `
-      <button class="recent-item ${active}" data-conversation="${conversation.id}">
-        <span>${conversation.parentConversationId ? '<b class="branch-mark">⑂</b>' : ''}${escapeHtml(conversation.title)}</span>
-        <small>${escapeHtml(project ? project.name : 'Di luar Project')} • ${conversation.parentConversationId ? 'Branch • ' : ''}${escapeHtml(conversation.updated)}</small>
-      </button>
-    `;
-  }).join('');
-
-  return `
-    <aside class="sidebar">
-      <div class="brand-row">
-        <div class="brand">Claude</div>
-        <div class="icon-row"><button aria-label="Cari" data-action="focus-prompt">⌕</button><button aria-label="Panel" data-action="toggle-skills">◧</button></div>
-      </div>
-
-      <nav class="primary-nav" aria-label="Navigasi utama">
-        <button class="nav-item strong" data-action="new-chat"><span>＋</span> Chat baru</button>
-        <button class="nav-item" data-action="show-chats"><span>☏</span> Obrolan</button>
-        <button class="nav-item" data-action="show-projects"><span>▣</span> Proyek</button>
-        <button class="nav-item" data-action="show-artifacts"><span>◇</span> Artefak</button>
-        <button class="nav-item" data-action="toggle-skills"><span>▤</span> Sesuaikan</button>
-      </nav>
-
-      <div class="sidebar-section">
-        <p>Produk</p>
-        <button class="nav-item" data-quick="Bantu saya membuat workspace cowork yang rapi untuk tim."><span>☷</span> Cowork</button>
-        <button class="nav-item" data-quick="Bantu saya menulis dan mereview kode dengan langkah jelas."><span>&lt;/&gt;</span> Kode</button>
-      </div>
-
-      <div class="sidebar-section recents" id="recent-list">
-        <div class="section-title"><p>Terbaru</p><button title="Filter" data-action="show-chats">⌘</button></div>
-        ${recentItems}
-      </div>
-    </aside>
-  `;
+function phIcon(name, className = '') {
+  return `<i class="ph ph-${name} ${className}" aria-hidden="true"></i>`;
 }
-
-function renderProjectRail() {
-  const rows = defaultProjects.map((project) => {
-    const count = state.conversations.filter((conversation) => conversation.projectId === project.id).length;
-    const active = state.activeProject === project.id ? 'selected' : '';
-    return `
-      <button class="project-card ${active}" data-project="${project.id}">
-        <span class="project-dot ${project.color}"></span>
-        <span><strong>${escapeHtml(project.name)}</strong><small>${count} sesi • memori khusus</small></span>
-      </button>
-    `;
-  }).join('');
-  const memory = activeMemory();
-
-  return `
-    <section class="project-rail ${state.showProjects ? '' : 'collapsed'}" id="project-rail">
-      <div class="rail-header">
-        <div>
-          <p>Project folders</p>
-          <h2>Memori per folder</h2>
-        </div>
-        <button data-project="outside">Umum</button>
-      </div>
-      <button class="project-card ${state.activeProject === null ? 'selected' : ''}" data-project="outside">
-        <span class="project-dot neutral"></span>
-        <span><strong>Di luar Project</strong><small>Sesi bebas tanpa memori folder</small></span>
-      </button>
-      ${rows}
-      <div class="memory-card">
-        <p>Memori aktif</p>
-        <strong>${escapeHtml(memory?.name ?? 'Sesi umum')}</strong>
-        <span>${escapeHtml(memory?.memory ?? 'Tidak memakai memori Project. Cocok untuk percakapan lintas topik.')}</span>
-      </div>
-    </section>
-  `;
-}
-
-function renderActions(message) {
-  return (message.actions ?? []).map((action) => `
-    <div class="organic-action ${escapeHtml(action.type)}">
-      <span>${action.type === 'tool' ? '🔧' : '📄'}</span>
-      <div><strong>${escapeHtml(action.name)}</strong><small>${escapeHtml(action.detail)}</small></div>
-    </div>
-  `).join('');
-}
-
-function renderChat() {
-  const memory = activeMemory();
-  const conversation = currentConversation();
-  const parentConversation = conversationById(conversation?.parentConversationId);
-  const messages = currentMessages().map((message) => `
-    <article class="message ${escapeHtml(message.role)}">
-      <div class="avatar">${message.role === 'assistant' ? '✺' : 'S'}</div>
-      <div class="bubble">
-        <p>${escapeHtml(message.text)}</p>
-        ${message.usage ? `<small class="usage">${escapeHtml(message.model || state.model)} · input ${message.usage.input_tokens ?? 0} · output ${message.usage.output_tokens ?? 0}</small>` : ''}
-        ${renderActions(message)}
-        ${message.role === 'assistant' && !state.isSending ? `<button class="branch-message" data-branch-message="${message.id}" title="Buat sesi baru dari respons ini">⑂ Branch dari sini</button>` : ''}
-      </div>
-    </article>
-  `).join('');
-
-  return `
-    <main class="workspace">
-      <header class="topbar">
-        <div class="plan-pill">API pribadi · <span>${state.apiKey ? 'Key siap' : 'Masukkan key'}</span></div>
-        <div class="topbar-actions"><button class="branch-chat" data-action="branch-chat" ${state.isSending ? 'disabled' : ''}>⑂ Branch chat</button><button class="ghost-button" data-action="focus-prompt">👻</button></div>
-      </header>
-
-      <section class="hero">
-        <div class="claude-mark">✺</div>
-        <h1>Malam, siffan</h1>
-        <p>${memory ? `Menggunakan memori Project “${escapeHtml(memory.name)}”.` : 'Sesi ini berada di luar Project dan tetap mandiri.'}</p>
-      </section>
-
-      <section class="chat-card" aria-label="Area percakapan">
-        ${parentConversation ? `<div class="branch-banner">⑂ Branch dari <button data-conversation="${parentConversation.id}">${escapeHtml(parentConversation.title)}</button> · Project dan riwayat sebelum titik branch diwarisi.</div>` : ''}
-        <div class="messages" id="messages">${messages}${state.isSending ? '<div class="typing">Claude sedang berpikir…</div>' : ''}</div>
-        ${state.error ? `<div class="error-banner">${escapeHtml(state.error)}</div>` : ''}
-        <div class="composer">
-          <textarea id="prompt-input" placeholder="Apa yang bisa saya bantu hari ini? Coba: ‘buat file roadmap.md’ atau ‘cari di Confluence’" ${state.isSending ? 'disabled' : ''}></textarea>
-          <div class="composer-footer">
-            <div class="quick-actions">
-              <button data-quick="Riset topik ini secara terstruktur:">Riset</button><button data-quick="Tulis kode untuk kebutuhan berikut:">&lt;/&gt; Kode</button><button data-quick="Bantu saya menulis dokumen berikut:">✎ Tulis</button><button data-quick="Ajari saya langkah demi langkah tentang:">▱ Belajar</button><button data-quick="Bantu urusan pribadi ini dengan checklist:">☕ Urusan pribadi</button>
-            </div>
-            <div class="model-controls">
-              <select id="model-select" aria-label="Pilih model">
-                ${defaultModels.map((model) => `<option value="${model.id}" ${model.id === currentModelId() ? 'selected' : ''}>${escapeHtml(model.label)}</option>`).join('')}
-              </select>
-              <select id="tone-select" aria-label="Pilih intensitas berpikir">
-                ${['Rendah', 'Sedang', 'Tinggi'].map((tone) => `<option ${tone === state.tone ? 'selected' : ''}>${tone}</option>`).join('')}
-              </select>
-              <button title="Voice" data-quick="Transkrip voice saya:">🎙</button><button id="send-button" class="send-button" data-action="send-message" ${state.isSending ? 'disabled' : ''}>${state.isSending ? '■' : '↵'}</button>
-            </div>
-          </div>
-        </div>
-      </section>
-    </main>
-  `;
-}
-
 
 function formatMemoryTime(value) {
   if (!value) return 'Belum pernah';
   return new Date(value).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-function renderMemoryManager() {
-  const project = activeMemory();
-  const projectUpdatedAt = project ? state.memoryUpdatedAt?.projects?.[project.id] : '';
-  const sessionUpdatedAt = state.memoryUpdatedAt?.sessions?.[state.activeConversation] || '';
-  const stats = currentContextStats();
+function saveSettings() {
+  state.profile = {
+    fullName: document.querySelector('#profile-full-name')?.value.trim() || state.profile.fullName,
+    callName: document.querySelector('#profile-call-name')?.value.trim() || state.profile.callName,
+    work: document.querySelector('#profile-work')?.value || '',
+  };
+  saveState();
+  render();
+}
 
+function projectMemoryMarkdown() {
+  const project = activeMemory();
+  if (!project) return '';
+  return `# Project memory: ${project.name}\n\n${generatedProjectMemory(project.id) || project.memory || '-'}`;
+}
+
+function globalMemoryMarkdown() {
+  return `# Global memory\n\n${state.globalMemory || '-'}`;
+}
+
+function memoryModalProject() {
+  return projectById(state.activeProject) || projectById(currentConversation()?.projectId);
+}
+
+function memoryModalContent() {
+  if (state.memoryModalScope === 'global') return state.globalMemory || '';
+  const project = memoryModalProject();
+  return project ? generatedProjectMemory(project.id) || project.memory || '' : '';
+}
+
+function openMemoryModal(scope) {
+  state.memoryModalScope = scope;
+  state.memoryModalEditing = false;
+  saveState();
+  render();
+}
+
+function closeMemoryModal() {
+  state.memoryModalScope = null;
+  state.memoryModalEditing = false;
+  saveState();
+  render();
+}
+
+function startMemoryModalEditing() {
+  state.memoryModalEditing = true;
+  render();
+  document.querySelector('#memory-modal-editor')?.focus();
+}
+
+function saveMemoryModal() {
+  const value = document.querySelector('#memory-modal-editor')?.value.trim() || '';
+  const now = new Date().toISOString();
+  if (state.memoryModalScope === 'global') {
+    state.globalMemory = value;
+    state.memoryUpdatedAt = { ...state.memoryUpdatedAt, global: now };
+  } else {
+    const project = memoryModalProject();
+    if (!project) return;
+    state.projectMemories = { ...state.projectMemories, [project.id]: value };
+    state.memoryUpdatedAt = {
+      ...state.memoryUpdatedAt,
+      projects: { ...(state.memoryUpdatedAt?.projects || {}), [project.id]: now },
+    };
+  }
+  state.memoryModalEditing = false;
+  saveState();
+  render();
+}
+
+function parseMemoryForDisplay(memory = '') {
+  const text = String(memory || '').trim();
+  if (!text) return [];
+  const escapedHeadings = MEMORY_SECTION_TITLES.map((heading) => heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const headingPattern = new RegExp(`^(?:#{1,3}\\s*)?(${escapedHeadings})\\s*$`, 'gim');
+  const matches = [...text.matchAll(headingPattern)];
+  if (!matches.length) return [{ heading: '', content: text }];
+  return matches.map((match, index) => ({
+    heading: match[1],
+    content: text.slice(match.index + match[0].length, matches[index + 1]?.index ?? text.length).trim(),
+  })).filter((section) => section.content);
+}
+
+function renderMemoryDocument(memory) {
+  const sections = parseMemoryForDisplay(memory);
+  if (!sections.length) return '<p class="memory-empty">No memory yet.</p>';
+  return sections.map((section) => {
+    const paragraphs = section.content
+      .split(/\n\s*\n/)
+      .map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll('\n', '<br />')}</p>`)
+      .join('');
+    return `<section>${section.heading ? `<h3>${escapeHtml(section.heading)}</h3>` : ''}${paragraphs}</section>`;
+  }).join('');
+}
+
+function activeNav() {
+  if (state.view === 'projects' || state.view === 'project') return 'projects';
+  if (state.view === 'customize') return 'customize';
+  if (state.view === 'artifacts') return 'artifacts';
+  return 'chat';
+}
+
+function renderWindowBar() {
   return `
-    <div class="inspector-card memory-manager">
-      <div class="panel-heading">
-        <p>Memory</p>
-        <strong>${state.isMemoryUpdating ? 'Memperbarui…' : 'Akun dan Project'}</strong>
-        <small>Memory dipakai otomatis saat chat.${state.tokenCount ? ` Token input: ${state.tokenCount}.` : ''}</small>
+    <header class="window-bar">
+      <div class="window-tools">
+        <button data-action="toggle-sidebar" aria-label="Toggle sidebar">${phIcon('list')}</button>
+        <button data-action="toggle-sidebar" aria-label="Panel">${phIcon('sidebar-simple')}</button>
+        <button data-action="focus-search" aria-label="Search">${phIcon('magnifying-glass')}</button>
+        <button data-action="show-chat" aria-label="Back">${phIcon('arrow-left')}</button>
+        <button disabled aria-label="Forward">${phIcon('arrow-right')}</button>
       </div>
-      <div class="context-meter">
-        <span style="width: ${Math.min(100, Math.round((stats.sentChars / Math.max(stats.totalChars, 1)) * 100))}%"></span>
+      <div class="window-tools window-controls">
+        <button disabled aria-label="Minimize">${phIcon('minus')}</button>
+        <button disabled aria-label="Restore">${phIcon('app-window')}</button>
+        <button disabled aria-label="Close">${phIcon('x')}</button>
       </div>
-      <dl class="memory-list">
-        <div><dt>Session summary</dt><dd>${escapeHtml(currentSessionSummary() || 'Belum ada ringkasan sesi.')}</dd><small>Update: ${escapeHtml(formatMemoryTime(sessionUpdatedAt))}</small></div>
-        <div>
-          <dt>Global/account memory</dt>
-          <textarea id="global-memory-editor" class="memory-editor" placeholder="Tambahkan preferensi akun/global…">${escapeHtml(state.globalMemory || '')}</textarea>
-          <small>Update: ${escapeHtml(formatMemoryTime(state.memoryUpdatedAt?.global))}</small>
-        </div>
-        <div>
-          <dt>Project memory</dt>
-          <textarea id="project-memory-editor" class="memory-editor" ${project ? '' : 'disabled'} placeholder="Pilih Project untuk mengedit memory project…">${escapeHtml(project?.generatedMemory || '')}</textarea>
-          <small>${escapeHtml(project?.name || 'Di luar Project')} • Update: ${escapeHtml(formatMemoryTime(projectUpdatedAt))}</small>
-        </div>
-      </dl>
-      <div class="editor-actions">
-        <button data-action="save-memory">Simpan memory</button>
-        <button data-action="copy-memory">Salin memory</button>
-        <button data-action="download-memory">Unduh memory</button>
-      </div>
-      <small class="memory-hint">Memory diperbarui otomatis dan tetap bisa diedit manual.</small>
-    </div>
+    </header>
   `;
 }
 
-function renderInspector() {
-  const skillRows = activeSkills().map((skill) => `
-    <div class="skill-row ${skill.id === state.activeSkill ? 'selected' : ''}">
-      <input type="checkbox" data-skill="${skill.id}" ${skill.active ? 'checked' : ''} />
-      <button data-skill-select="${skill.id}"><strong>${escapeHtml(skill.name)}</strong><small>${escapeHtml(skill.description)}</small></button>
-    </div>
-  `).join('');
-  const skill = selectedSkill();
-
-  const artifactRows = state.artifacts.map((artifact) => `
-    <button class="artifact-row ${artifact.id === state.activeArtifact ? 'active' : ''}" data-artifact="${artifact.id}">
-      <span>${artifact.type === 'file' ? '📄' : '📝'}</span>
-      <div><strong>${escapeHtml(artifact.name)}</strong><small>${escapeHtml(artifact.detail)}</small></div>
+function renderSidebar() {
+  const nav = activeNav();
+  const recentItems = state.conversations.map((conversation) => `
+    <button class="recent-link ${conversation.id === state.activeConversation && nav === 'chat' ? 'active' : ''}" data-conversation="${conversation.id}" title="${escapeHtml(conversation.title)}">
+      ${escapeHtml(conversation.title)}
     </button>
   `).join('');
 
-  const activeArtifact = state.artifacts.find((artifact) => artifact.id === state.activeArtifact) ?? state.artifacts[0];
-
   return `
-    <aside class="inspector ${state.showSkills ? 'open' : ''}" id="inspector">
-      <div class="inspector-card api-card">
-        <div class="panel-heading"><p>API Key</p><strong>Claude API proxy</strong><small>Isi key di sini atau jalankan server dengan ANTHROPIC_API_KEY.</small></div>
-        <input id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeHtml(state.apiKey)}" />
-        <label class="remember-row"><input type="checkbox" id="save-key" ${state.apiKeySaved ? 'checked' : ''} /> Simpan di browser ini</label>
+    <aside class="app-sidebar ${state.sidebarCollapsed ? 'collapsed' : ''}">
+      <div class="product-tabs">
+        <button class="product-tab ${nav === 'chat' ? 'active' : ''}" data-action="show-chat">${phIcon('chat-circle')}<span>Chat</span></button>
       </div>
-      ${renderMemoryManager()}
-      <div class="inspector-card">
-        <div class="panel-heading"><p>Model</p><strong>${escapeHtml(modelById(currentModelId()).label)}</strong><small>${escapeHtml(modelById(currentModelId()).detail)}</small></div>
+      <div class="sidebar-primary">
+        <button class="new-chat-button" data-action="new-chat">${phIcon('plus')}<span>New chat</span></button>
+        <button class="sidebar-link ${nav === 'projects' ? 'active' : ''}" data-action="show-projects">${phIcon('folder-simple')}<span>Projects</span></button>
+        <button class="sidebar-link ${nav === 'artifacts' ? 'active' : ''}" data-action="show-artifacts">${phIcon('stack')}<span>Artifacts</span></button>
+        <button class="sidebar-link ${nav === 'customize' ? 'active' : ''}" data-action="show-customize">${phIcon('sliders-horizontal')}<span>Customize</span></button>
       </div>
-      <div class="inspector-card skill-manager">
-        <div class="panel-heading"><p>Skills</p><strong>Claude-like editable skills</strong><small>Skill aktif dipicu oleh keyword; tanpa keyword, skill selalu dikirim ke Claude.</small></div>
-        <div class="skill-list">${skillRows}</div>
-        ${skill ? `
-          <div class="skill-editor">
-            <label>Nama skill<input id="skill-name-input" value="${escapeHtml(skill.name)}" /></label>
-            <label>Deskripsi<textarea id="skill-description-input">${escapeHtml(skill.description || '')}</textarea></label>
-            <label>Trigger keywords <small>Kosong = selalu aktif</small><input id="skill-keywords-input" value="${escapeHtml((skill.triggerKeywords || []).join(', '))}" /></label>
-            <label>Instruksi skill<textarea id="skill-content-input">${escapeHtml(skill.content || '')}</textarea></label>
-            <div class="editor-actions">
-              <button data-action="save-skill">Simpan</button>
-              <button data-action="copy-skill">Salin</button>
-              <button data-action="download-skill">Unduh</button>
-              <button data-action="duplicate-skill">Duplikat</button>
-              ${skill.builtin ? '' : '<button data-action="delete-skill">Hapus</button>'}
-            </div>
-          </div>
-        ` : ''}
-        <button class="add-skill" data-action="add-skill">＋ Tambahkan skill</button>
+      <div class="recent-section" id="recent-list">
+        <p>Recents</p>
+        <div class="recent-list">${recentItems}</div>
       </div>
-      <div class="inspector-card" id="artifact-panel">
-        <div class="panel-heading"><p>Artefak</p><strong>File yang dihasilkan</strong></div>
-        ${artifactRows}
-        ${activeArtifact ? `
-          <div class="artifact-preview">
-            <div class="preview-actions"><strong>${escapeHtml(activeArtifact.name)}</strong><span><button data-copy="${activeArtifact.id}">Salin</button><button data-download="${activeArtifact.id}">Unduh</button></span></div>
-            <pre>${escapeHtml(activeArtifact.content)}</pre>
-          </div>
-        ` : ''}
+      <div class="sidebar-footer">
+        <button class="profile-button" data-action="show-settings">
+          <span class="profile-avatar">N</span>
+          <span class="profile-copy"><strong>${escapeHtml(state.profile.callName)}</strong></span>
+          ${phIcon('caret-down')}
+        </button>
+        <button class="sidebar-download" data-action="download-global-memory" aria-label="Download global memory">${phIcon('download-simple')}</button>
       </div>
     </aside>
   `;
 }
 
+function renderActions(message) {
+  return (message.actions ?? []).map((action) => `
+    <div class="organic-action">
+      ${icon(action.type === 'tool' ? 'build' : 'description')}
+      <div><strong>${escapeHtml(action.name)}</strong><small>${escapeHtml(action.detail)}</small></div>
+    </div>
+  `).join('');
+}
+
+function renderMessages() {
+  return currentMessages().map((message) => `
+    <article class="message ${escapeHtml(message.role)}">
+      <div class="message-avatar">${message.role === 'assistant' ? '<img class="claude-mark message-mark" src="/src/assets/claude-spark-clay.svg" alt="" />' : 'N'}</div>
+      <div class="message-body">
+        <p>${escapeHtml(message.text)}</p>
+        ${message.usage ? `<small class="usage">${escapeHtml(message.model || state.model)} · input ${message.usage.input_tokens ?? 0} · output ${message.usage.output_tokens ?? 0}</small>` : ''}
+        ${renderActions(message)}
+        ${message.role === 'assistant' && !state.isSending ? `<button class="branch-message" data-branch-message="${message.id}">${icon('fork_right')} Branch dari sini</button>` : ''}
+      </div>
+    </article>
+  `).join('');
+}
+
+function renderComposer({ project = false } = {}) {
+  return `
+    <div class="composer ${project ? 'project-composer' : ''}">
+      <textarea id="prompt-input" placeholder="${project ? 'Type / for skills' : 'How can I help you today?'}" ${state.isSending ? 'disabled' : ''}></textarea>
+      <div class="composer-controls">
+        <button class="icon-button" data-quick="Lampirkan konteks berikut:" aria-label="Add">${phIcon('plus')}</button>
+        <div class="composer-options">
+          <select id="model-select" aria-label="Pilih model">
+            ${defaultModels.map((model) => `<option value="${model.id}" ${model.id === currentModelId() ? 'selected' : ''}>${escapeHtml(model.label)}</option>`).join('')}
+          </select>
+          <select id="tone-select" aria-label="Pilih intensitas berpikir">
+            ${['Rendah', 'Sedang', 'Tinggi'].map((tone) => `<option ${tone === state.tone ? 'selected' : ''}>${tone}</option>`).join('')}
+          </select>
+          <button class="icon-button" data-quick="Transkrip voice saya:" aria-label="Voice">${phIcon('microphone')}</button>
+          <button class="send-button ${project ? 'project-send' : 'chat-send'}" data-action="send-message" aria-label="Send" ${state.isSending ? 'disabled' : ''}>${state.isSending ? phIcon('stop') : project ? phIcon('paper-plane-right') : phIcon('chart-bar')}</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderChatView() {
+  const hasUserMessage = currentMessages().some((message) => message.role === 'user');
+  const callName = state.profile.callName || 'nafis';
+  return `
+    <main class="chat-view">
+      <div class="chat-window-controls">
+        <button aria-label="Feedback">${phIcon('smiley')}</button>
+        <button disabled aria-label="Minimize">${phIcon('minus')}</button>
+        <button disabled aria-label="Restore">${phIcon('app-window')}</button>
+        <button disabled aria-label="Close">${phIcon('x')}</button>
+      </div>
+      <section class="chat-content ${hasUserMessage ? 'conversation-mode' : 'empty-mode'}">
+        ${hasUserMessage ? `
+          <div class="conversation-header">
+            <h1>${escapeHtml(currentConversation()?.title || 'Chat')}</h1>
+            <button data-action="branch-chat" class="secondary-button">${icon('fork_right')} Branch</button>
+          </div>
+          <div class="messages" id="messages">${renderMessages()}${state.isSending ? '<div class="typing">Claude sedang berpikir…</div>' : ''}</div>
+        ` : `
+          <div class="greeting">
+            <img class="claude-mark greeting-mark" src="/src/assets/claude-spark-clay.svg" alt="Claude" />
+            <h1>Good evening, ${escapeHtml(callName)}</h1>
+          </div>
+        `}
+        ${state.error ? `<div class="error-banner">${escapeHtml(state.error)}</div>` : ''}
+        ${renderComposer()}
+        ${hasUserMessage ? '' : `
+          <div class="suggestion-chips">
+            <button data-quick="Susun strategi untuk:">${icon('monitoring')}<span>Strategize</span></button>
+            <button data-quick="Tulis kode untuk:">${icon('code')}<span>Code</span></button>
+            <button data-quick="Ajari saya tentang:">${icon('school')}<span>Learn</span></button>
+            <button data-quick="Bantu saya menulis:">${icon('edit')}<span>Write</span></button>
+          </div>
+        `}
+      </section>
+    </main>
+  `;
+}
+
+function renderProjectsView() {
+  const cards = allProjects().map((project) => {
+    const count = state.conversations.filter((conversation) => conversation.projectId === project.id).length;
+    return `
+      <button class="project-card" data-open-project="${project.id}" data-project-name="${escapeHtml(project.name.toLowerCase())}">
+        <span>
+          <strong>${escapeHtml(project.name)}</strong>
+          <p>${escapeHtml(project.memory || 'Project workspace with dedicated memory and instructions.')}</p>
+        </span>
+        <small>${count} chat${count === 1 ? '' : 's'} · Updated recently</small>
+      </button>
+    `;
+  }).join('');
+  return `
+    <main class="page-view projects-view">
+      <div class="page-heading">
+        <h1>Projects</h1>
+        <div class="page-actions">
+          <button class="sort-button">Sort by <strong>Recent activity</strong>${icon('expand_more')}</button>
+          <button class="primary-dark" data-action="new-project">New project</button>
+        </div>
+      </div>
+      <label class="search-field">
+        ${icon('search')}
+        <input id="project-search" placeholder="Search projects..." />
+      </label>
+      <div class="project-grid">${cards}</div>
+    </main>
+  `;
+}
+
+function renderProjectMemoryPanel(project) {
+  const memory = generatedProjectMemory(project.id) || project.memory || '';
+  return `
+    <section class="context-card memory-context" data-action="open-project-memory">
+      <div class="context-card-heading">
+        <h2>Memory</h2>
+        <span class="privacy-chip">${icon('lock')} Only you</span>
+        <button class="icon-button" data-action="open-project-memory" aria-label="Manage project memory">${icon('edit')}</button>
+      </div>
+      <p>${escapeHtml(memory || 'No project memory yet.')}</p>
+      <small>Last updated ${escapeHtml(formatMemoryTime(state.memoryUpdatedAt?.projects?.[project.id]))}</small>
+    </section>
+  `;
+}
+
+function renderProjectDetailView() {
+  const project = projectById(state.activeProject) || allProjects()[0];
+  if (!project) return renderProjectsView();
+  const projectConversations = state.conversations.filter((conversation) => conversation.projectId === project.id);
+  const history = projectConversations.length
+    ? projectConversations.map((conversation) => `
+        <button class="project-history-item" data-conversation="${conversation.id}">
+          <strong>${escapeHtml(conversation.title)}</strong>
+          <small>Last message ${escapeHtml(conversation.updated)}</small>
+        </button>
+      `).join('')
+    : '<p class="empty-copy">Belum ada chat di proyek ini.</p>';
+  const files = state.artifacts.slice(0, 4).map((artifact) => `
+    <button class="project-file" data-artifact="${artifact.id}">
+      <strong>${escapeHtml(artifact.name)}</strong>
+      <span><small>${artifact.content.split('\n').length} lines</small><b>${escapeHtml(artifact.name.split('.').pop()?.toUpperCase() || 'FILE')}</b></span>
+    </button>
+  `).join('');
+  return `
+    <main class="project-detail-view">
+      <button class="back-link" data-action="show-projects">${icon('arrow_back')} All projects</button>
+      <div class="project-detail-layout">
+        <section class="project-primary">
+          <div class="project-title-row">
+            <h1>${escapeHtml(project.name)}</h1>
+            <span><button class="icon-button">${icon('more_vert')}</button><button class="icon-button">${icon('push_pin')}</button></span>
+          </div>
+          ${renderComposer({ project: true })}
+          <div class="project-history">${history}</div>
+        </section>
+        <aside class="project-context-column">
+          ${renderProjectMemoryPanel(combineProjectMemory(project))}
+          <section class="context-card">
+            <div class="context-card-heading"><h2>Instructions</h2><button class="icon-button" aria-label="Project instructions">${icon('add')}</button></div>
+            <p class="italic">${escapeHtml(project.systemPrompt || 'Add instructions to tailor Claude’s responses')}</p>
+          </section>
+          <section class="context-card files-context">
+            <div class="context-card-heading"><h2>Files</h2><button class="icon-button" data-action="show-artifacts">${icon('add')}</button></div>
+            <div class="project-files">${files || '<p class="empty-copy">No files yet.</p>'}</div>
+          </section>
+        </aside>
+      </div>
+    </main>
+  `;
+}
+
+function formatConnectorCheckTime(value) {
+  if (!value) return 'Belum diuji';
+  return new Intl.DateTimeFormat('id-ID', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function renderConnectorProduct({ iconName, name, description, capabilities }) {
+  const connected = state.connectorStatus.connected;
+  return `
+    <article class="connector-product-card">
+      <div class="connector-product-icon ${name.toLowerCase()}">${phIcon(iconName)}</div>
+      <div class="connector-product-copy">
+        <div class="connector-product-heading">
+          <h3>${name}</h3>
+          <span class="connector-product-status ${connected ? 'connected' : ''}">
+            <i></i>${connected ? 'Connected' : 'Not connected'}
+          </span>
+        </div>
+        <p>${description}</p>
+        <div class="connector-capabilities">
+          ${capabilities.map((capability) => `<span>${phIcon('check')}${capability}</span>`).join('')}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderConnectorsPanel() {
+  const connector = state.connectorStatus;
+  const busy = state.connectorBusy;
+  return `
+    <section class="connectors-panel">
+      <div class="connectors-heading">
+        <div>
+          <p class="connectors-eyebrow">Workspace tools</p>
+          <h2>Connectors</h2>
+          <p>Hubungkan Atlassian agar chat dapat mencari, membaca, dan memperbarui Jira serta Confluence.</p>
+        </div>
+        <span class="connector-overall-status ${connector.connected ? 'connected' : ''}">
+          <i></i>${connector.loading ? 'Checking...' : connector.connected ? 'Atlassian connected' : 'Not connected'}
+        </span>
+      </div>
+
+      <section class="atlassian-connection-card ${connector.connected ? 'connected' : ''}">
+        <div class="atlassian-connection-header">
+          <div class="atlassian-mark">${phIcon('circles-three-plus')}</div>
+          <div>
+            <h3>Atlassian</h3>
+            <p>Satu koneksi aman untuk Jira dan Confluence Cloud.</p>
+          </div>
+        </div>
+
+        ${connector.connected ? `
+          <div class="connector-account-summary">
+            <div>
+              <span>Account</span>
+              <strong>${escapeHtml(connector.displayName || 'Atlassian account')}</strong>
+              <small>${escapeHtml(connector.email)}</small>
+            </div>
+            <div>
+              <span>Site</span>
+              <strong>${escapeHtml(connector.baseUrl.replace(/^https?:\/\//, ''))}</strong>
+              <small>${connector.source === 'environment' ? 'Configured by server environment' : 'Connected for this server session'}</small>
+            </div>
+            <div>
+              <span>Last checked</span>
+              <strong>${escapeHtml(formatConnectorCheckTime(connector.checkedAt))}</strong>
+              <small>Jira and Confluence access</small>
+            </div>
+          </div>
+          <div class="connector-card-actions">
+            <button data-action="test-atlassian" ${busy ? 'disabled' : ''}>
+              ${busy === 'test' ? phIcon('spinner-gap', 'spin') : phIcon('pulse')} Test connection
+            </button>
+            <button class="danger-quiet" data-action="disconnect-atlassian" ${busy ? 'disabled' : ''}>
+              ${busy === 'disconnect' ? 'Disconnecting...' : 'Disconnect'}
+            </button>
+          </div>
+        ` : `
+          <div class="connector-form">
+            <label>
+              <span>Atlassian site URL</span>
+              <input id="atlassian-base-url" type="url" placeholder="https://your-company.atlassian.net" autocomplete="url" />
+            </label>
+            <label>
+              <span>Email</span>
+              <input id="atlassian-email" type="email" placeholder="you@company.com" autocomplete="email" />
+            </label>
+            <label>
+              <span>API token</span>
+              <input id="atlassian-api-token" type="password" placeholder="Paste your Atlassian API token" autocomplete="off" />
+            </label>
+            <div class="connector-form-footer">
+              <p>${phIcon('shield-check')} Token hanya disimpan di memori proses server dan tidak masuk ke browser storage.</p>
+              <button class="primary-dark" data-action="connect-atlassian" ${busy || connector.loading ? 'disabled' : ''}>
+                ${busy === 'connect' ? `${phIcon('spinner-gap', 'spin')} Connecting...` : 'Connect Atlassian'}
+              </button>
+            </div>
+          </div>
+        `}
+
+        ${connector.error ? `<div class="connector-error">${phIcon('warning-circle')}<span>${escapeHtml(connector.error)}</span></div>` : ''}
+      </section>
+
+      <div class="connector-products-heading">
+        <h3>Available tools</h3>
+        <p>Kedua tool memakai akun Atlassian yang sama.</p>
+      </div>
+      <div class="connector-products">
+        ${renderConnectorProduct({
+          iconName: 'check-square-offset',
+          name: 'Jira',
+          description: 'Cari issue, baca detail ticket, buat issue baru, ubah field, dan tambahkan komentar.',
+          capabilities: ['Search & read', 'Create & update', 'Add comments'],
+        })}
+        ${renderConnectorProduct({
+          iconName: 'files',
+          name: 'Confluence',
+          description: 'Cari halaman, baca isi workspace, dan perbarui halaman dengan instruksi eksplisit.',
+          capabilities: ['Search pages', 'Read content', 'Update pages'],
+        })}
+      </div>
+    </section>
+  `;
+}
+
+function renderCustomizeView() {
+  const showConnectors = state.customizeSection === 'connectors';
+  const skills = activeSkills();
+  const skill = selectedSkill();
+  const skillRows = skills.map((item) => `
+    <button class="skill-list-item ${item.id === skill?.id ? 'active' : ''}" data-skill-select="${item.id}">
+      ${escapeHtml(item.name)}
+    </button>
+  `).join('');
+  const skillCreateControl = (placement, label) => `
+    <details class="skill-create-disclosure ${placement}">
+      <summary aria-label="${label}">${phIcon('plus')}</summary>
+      <div class="skill-create-menu" role="menu" aria-label="Skill creation options">
+        <button role="menuitem" data-action="write-skill-instructions">
+          ${phIcon('notepad')}<span>Write skill instructions</span>
+        </button>
+        <button role="menuitem" data-action="upload-skill">
+          ${phIcon('upload-simple')}<span>Upload a skill</span>
+        </button>
+      </div>
+    </details>
+  `;
+  return `
+    <main class="customize-view">
+      <header class="customize-header"><button data-action="show-chat">${phIcon('arrow-left')}</button><h1>Customize</h1><span class="profile-avatar">N</span></header>
+      <div class="customize-layout ${showConnectors ? 'connectors-mode' : ''}">
+        <aside class="customize-nav">
+          <button class="${showConnectors ? '' : 'active'}" data-action="show-customize-skills">${phIcon('books')}<span>Skills</span></button>
+          <button class="${showConnectors ? 'active' : ''}" data-action="show-customize-connectors">${phIcon('plugs-connected')}<span>Connectors</span></button>
+        </aside>
+        ${showConnectors ? renderConnectorsPanel() : `
+          <section class="skill-browser">
+            <div class="skill-browser-heading"><h2>Skills</h2><span><button aria-label="Search skills">${phIcon('magnifying-glass')}</button>${skillCreateControl('from-browser', 'Create skill')}</span></div>
+            <p class="skill-group-label">${phIcon('caret-down')} Personal skills</p>
+            <div class="skill-list">${skillRows}</div>
+          </section>
+          <section class="skill-detail">
+            ${skill ? `
+              <div class="skill-title-row">
+                <h2>${escapeHtml(skill.name)}</h2>
+                <span class="skill-title-actions">
+                  <label class="toggle"><input type="checkbox" data-skill="${skill.id}" ${skill.active ? 'checked' : ''} /><span></span></label>
+                  <details class="skill-actions-disclosure">
+                    <summary aria-label="Skill actions">${phIcon('dots-three-vertical')}</summary>
+                    <div class="skill-actions-menu" role="menu" aria-label="Skill actions">
+                      <button role="menuitem" data-action="try-skill-in-chat">${phIcon('chat-circle-dots')}<span>Try in chat</span></button>
+                      <button role="menuitem" data-action="edit-skill">${phIcon('pencil-simple')}<span>Edit</span></button>
+                      <button role="menuitem" data-action="edit-skill-with-claude">${phIcon('chats-circle')}<span>Edit with Claude</span></button>
+                      <button role="menuitem" data-action="replace-skill">${phIcon('upload-simple')}<span>Replace</span></button>
+                      <button role="menuitem" data-action="download-skill">${phIcon('download-simple')}<span>Download</span></button>
+                      <div class="skill-actions-separator"></div>
+                      <button class="danger" role="menuitem" data-action="uninstall-skill">${phIcon('trash')}<span>Uninstall</span></button>
+                    </div>
+                  </details>
+                </span>
+              </div>
+              <dl class="skill-meta">
+                <div><dt>Added by</dt><dd>You</dd></div>
+                <div><dt>Last updated</dt><dd>June 12, 2026</dd></div>
+                <div><dt>Trigger</dt><dd>${escapeHtml((skill.triggerKeywords || []).join(', ') || 'Auto')}</dd></div>
+              </dl>
+              <div class="skill-description">
+                <span>Description ${phIcon('info')}</span>
+                <p>${escapeHtml(skill.description || 'No description yet.')}</p>
+              </div>
+              ${state.skillFileError ? `<div class="skill-file-error">${phIcon('warning-circle')}<span>${escapeHtml(state.skillFileError)}</span></div>` : ''}
+              <article class="skill-document">
+                <div class="skill-document-tools" role="group" aria-label="Skill Markdown view">
+                  <button class="${state.skillViewMode === 'preview' ? 'active' : ''}" data-action="show-skill-preview" aria-label="Preview rendered Markdown" aria-pressed="${state.skillViewMode === 'preview'}">${phIcon('eye')}</button>
+                  <button class="${state.skillViewMode === 'raw' ? 'active' : ''}" data-action="show-skill-raw" aria-label="View raw Markdown" aria-pressed="${state.skillViewMode === 'raw'}">${phIcon('code')}</button>
+                </div>
+                ${state.skillViewMode === 'raw'
+                  ? `<pre class="skill-document-raw"><code>${escapeHtml(skillAsMarkdown(skill))}</code></pre>`
+                  : `<div class="skill-markdown-preview">${renderMarkdown(skillMarkdownBody(skill))}</div>`}
+              </article>
+            ` : ''}
+          </section>
+        `}
+      </div>
+      <input class="skill-upload-input" type="file" accept=".md,text/markdown" aria-label="Upload a Markdown skill file" />
+      <input class="skill-replace-input" type="file" accept=".md,text/markdown" aria-label="Replace selected skill with a Markdown file" />
+    </main>
+  `;
+}
+
+function renderSkillModal() {
+  if (!state.skillModalMode) return '';
+  const isEdit = state.skillModalMode === 'edit';
+  const skill = isEdit ? selectedSkill() : null;
+  const title = isEdit ? 'Edit skill instructions' : 'Write skill instructions';
+  return `
+    <div class="skill-modal-backdrop">
+      <section class="skill-modal" role="dialog" aria-modal="true" aria-label="${title}">
+        <header class="skill-modal-header">
+          <h2>${title}</h2>
+          <button data-action="close-skill-modal" aria-label="Close skill editor">${phIcon('x')}</button>
+        </header>
+        <div class="skill-modal-fields">
+          <label>
+            <span>Skill name</span>
+            <input id="skill-modal-name" value="${escapeHtml(skill?.name || '')}" placeholder="weekly-status-report" />
+          </label>
+          <label>
+            <span>Description</span>
+            <textarea id="skill-modal-description" placeholder="Generate weekly status reports from recent work. Use when asked for updates or progress summaries.">${escapeHtml(skill?.description || '')}</textarea>
+          </label>
+          <label>
+            <span>Instructions</span>
+            <textarea id="skill-modal-instructions" placeholder="Summarize my recent work in three sections: wins, blockers, and next steps. Keep the tone professional but not stiff...">${escapeHtml(skill?.content || '')}</textarea>
+          </label>
+        </div>
+        <footer class="skill-modal-actions">
+          <button data-action="close-skill-modal">Cancel</button>
+          <button class="skill-modal-submit" data-action="save-skill-modal" ${skill ? '' : 'disabled'}>${isEdit ? 'Save' : 'Create'}</button>
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
+function renderArtifactsView() {
+  const activeArtifact = state.artifacts.find((artifact) => artifact.id === state.activeArtifact) || state.artifacts[0];
+  const rows = state.artifacts.map((artifact) => `
+    <button class="artifact-list-item ${artifact.id === activeArtifact?.id ? 'active' : ''}" data-artifact="${artifact.id}">
+      ${icon('description')}<span><strong>${escapeHtml(artifact.name)}</strong><small>${escapeHtml(artifact.detail)}</small></span>
+    </button>
+  `).join('');
+  return `
+    <main class="artifacts-view">
+      <header class="customize-header"><button data-action="show-chat">${phIcon('arrow-left')}</button><h1>Artifacts</h1><span class="profile-avatar">N</span></header>
+      <div class="artifact-layout">
+        <section class="artifact-list"><div class="artifact-list-heading"><h2>Files</h2>${phIcon('magnifying-glass')}</div>${rows}</section>
+        <section class="artifact-detail">
+          ${activeArtifact ? `
+            <div class="artifact-detail-heading">
+              <h2>${escapeHtml(activeArtifact.name)}</h2>
+              <span><button data-copy="${activeArtifact.id}">Copy</button><button data-download="${activeArtifact.id}" class="primary-dark">Download</button></span>
+            </div>
+            <pre>${escapeHtml(activeArtifact.content)}</pre>
+          ` : '<p class="empty-copy">No artifacts yet.</p>'}
+        </section>
+      </div>
+    </main>
+  `;
+}
+
+function renderSettingsContent() {
+  if (state.settingsSection !== 'general') {
+    const labels = {
+      account: 'Account',
+      privacy: 'Privacy',
+      billing: 'Billing',
+      capabilities: 'Capabilities',
+      connectors: 'Connectors',
+      code: 'Claude Code',
+      desktop: 'Desktop app',
+      extensions: 'Extensions',
+      developer: 'Developer',
+    };
+    return `
+      <section class="settings-placeholder">
+        <h2>${labels[state.settingsSection] || 'Settings'}</h2>
+        <p>Pengaturan ini belum memerlukan konfigurasi tambahan pada workspace lokal.</p>
+      </section>
+    `;
+  }
+  return `
+    <section class="settings-content">
+      <h2>Profile</h2>
+      <div class="settings-row"><label>Avatar</label><span class="large-avatar">N</span></div>
+      <div class="settings-row"><label for="profile-full-name">Full name</label><input id="profile-full-name" value="${escapeHtml(state.profile.fullName)}" /></div>
+      <div class="settings-row"><label for="profile-call-name">What should Claude call you?</label><input id="profile-call-name" value="${escapeHtml(state.profile.callName)}" /></div>
+      <div class="settings-row"><label for="profile-work">What best describes your work?</label><select id="profile-work"><option value="">Select</option><option ${state.profile.work === 'Research' ? 'selected' : ''}>Research</option><option ${state.profile.work === 'Engineering' ? 'selected' : ''}>Engineering</option><option ${state.profile.work === 'Founder' ? 'selected' : ''}>Founder</option></select></div>
+      <div class="settings-section-block">
+        <h3>API key</h3>
+        <p>Dipakai oleh proxy lokal untuk mengakses Claude API.</p>
+        <input id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeHtml(state.apiKey)}" />
+        <label class="check-row"><input type="checkbox" id="save-key" ${state.apiKeySaved ? 'checked' : ''} /> Simpan di browser ini</label>
+      </div>
+      <div class="settings-section-block">
+        <h3>Global memory</h3>
+        <p>Preferensi lintas sesi. Memori ini tidak ditampilkan di halaman proyek.</p>
+        <button class="global-memory-card" data-action="open-global-memory">
+          <span><strong>Manage global memory</strong><small>${escapeHtml(state.globalMemory || 'No global memory yet.')}</small></span>
+          <span><small>Last updated: ${escapeHtml(formatMemoryTime(state.memoryUpdatedAt?.global))}</small>${icon('arrow_forward')}</span>
+        </button>
+      </div>
+      <div class="settings-save-row">
+        <button data-action="save-settings" class="primary-dark">Save changes</button>
+        <button data-action="copy-global-memory">Copy memory</button>
+        <button data-action="download-global-memory">Download</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderSettingsModal() {
+  if (!state.settingsOpen) return '';
+  const items = [
+    ['general', 'settings', 'General'],
+    ['account', 'person', 'Account'],
+    ['privacy', 'shield', 'Privacy'],
+    ['billing', 'credit_card', 'Billing'],
+    ['capabilities', 'work', 'Capabilities'],
+    ['connectors', 'cable', 'Connectors'],
+    ['code', 'code', 'Claude Code'],
+  ];
+  return `
+    <div class="settings-backdrop">
+      <div class="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
+        <aside class="settings-nav">
+          <label class="settings-search">${icon('search')}<input placeholder="Search" /></label>
+          <p>Settings</p>
+          ${items.map(([id, iconName, label]) => `<button class="${state.settingsSection === id ? 'active' : ''}" data-settings-section="${id}">${icon(iconName)}<span>${label}</span></button>`).join('')}
+        </aside>
+        <div class="settings-main">
+          <button class="settings-close" data-action="close-settings" aria-label="Close">${icon('close')}</button>
+          ${renderSettingsContent()}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMemoryModal() {
+  if (!state.memoryModalScope) return '';
+  const project = memoryModalProject();
+  const isGlobal = state.memoryModalScope === 'global';
+  const title = isGlobal ? 'Manage global memory' : 'Manage project memory';
+  const description = isGlobal
+    ? 'Claude regenerates global memory from your past chats. It keeps durable preferences and context that can be used across projects.'
+    : `Claude regenerates project memory every evening from your past chats in this project. Only you can see this memory, and it is not shared with other project users.`;
+  const memory = memoryModalContent();
+  return `
+    <div class="memory-modal-backdrop">
+      <section class="memory-modal" role="dialog" aria-modal="true" aria-label="${title}">
+        <header class="memory-modal-header">
+          <h2>${title}</h2>
+          <button data-action="close-memory-modal" aria-label="Close memory">${icon('close')}</button>
+        </header>
+        <p class="memory-modal-description">${description}</p>
+        <div class="memory-document-frame ${state.memoryModalEditing ? 'editing' : ''}">
+          ${state.memoryModalEditing
+            ? `<textarea id="memory-modal-editor" aria-label="${isGlobal ? 'Global memory editor' : 'Project memory editor'}">${escapeHtml(memory)}</textarea>`
+            : `<article class="memory-document">${renderMemoryDocument(memory)}</article>`}
+          ${state.memoryModalEditing ? '' : `<button class="memory-edit-fab" data-action="edit-memory-modal" aria-label="Edit ${isGlobal ? 'global' : 'project'} memory">${phIcon('pencil-simple')}</button>`}
+        </div>
+        ${state.memoryModalEditing ? `
+          <footer class="memory-modal-actions">
+            <button data-action="cancel-memory-modal-edit">Cancel</button>
+            <button data-action="save-memory-modal" class="primary-dark">Save</button>
+          </footer>
+        ` : ''}
+        ${!isGlobal && project ? `<span class="memory-modal-project-name">${escapeHtml(project.name)}</span>` : ''}
+      </section>
+    </div>
+  `;
+}
+
 function focusPrompt(prefix = '') {
   const input = document.querySelector('#prompt-input');
-  if (!input) return;
-  input.focus();
-  if (prefix) input.value = `${prefix} ${input.value}`.trim();
+  if (!input) {
+    state.view = 'chat';
+    saveState();
+    render();
+  }
+  const nextInput = document.querySelector('#prompt-input');
+  nextInput?.focus();
+  if (prefix && nextInput) nextInput.value = `${prefix} ${nextInput.value}`.trim();
+}
+
+function openProjectDetail(projectId) {
+  state.activeProject = projectId;
+  state.view = 'project';
+  state.projectMemoryEditing = false;
+  saveState();
+  render();
+}
+
+function createProjectConversation(projectId) {
+  const id = nextConversationId();
+  const project = projectById(projectId);
+  state.conversations = [{
+    id,
+    title: 'Tanpa judul',
+    projectId,
+    model: currentModelId(),
+    preview: 'Sesi proyek baru',
+    updated: 'Baru saja',
+  }, ...state.conversations];
+  state.messagesByConversation = {
+    ...state.messagesByConversation,
+    [id]: [{ ...welcomeMessage, id: crypto.randomUUID(), text: `Project ${project?.name || ''} aktif.` }],
+  };
+  state.activeConversation = id;
+}
+
+function sendMessageFromCurrentView() {
+  const input = document.querySelector('#prompt-input');
+  const prompt = input?.value.trim() || '';
+  if (!prompt) return;
+  if (state.view === 'project' && currentConversation()?.projectId !== state.activeProject) {
+    createProjectConversation(state.activeProject);
+    saveState();
+    render();
+    const nextInput = document.querySelector('#prompt-input');
+    if (nextInput) nextInput.value = prompt;
+  }
+  addMessage();
+}
+
+function createNewProject() {
+  const id = `project-${Date.now()}`;
+  const project = {
+    id,
+    name: `New project ${state.customProjects.length + 1}`,
+    systemPrompt: '',
+    memory: '',
+    color: 'neutral',
+  };
+  state.customProjects = [...state.customProjects, project];
+  openProjectDetail(id);
 }
 
 function handleClick(event) {
+  const activeCreateMenu = event.target.closest('.skill-create-disclosure');
+  document.querySelectorAll('.skill-create-disclosure[open]').forEach((menu) => {
+    if (menu !== activeCreateMenu) menu.removeAttribute('open');
+  });
+  const activeSkillActions = event.target.closest('.skill-actions-disclosure');
+  document.querySelectorAll('.skill-actions-disclosure[open]').forEach((menu) => {
+    if (menu !== activeSkillActions) menu.removeAttribute('open');
+  });
+
   const conversationButton = event.target.closest('[data-conversation]');
-  const projectButton = event.target.closest('[data-project]');
+  const openProjectButton = event.target.closest('[data-open-project]');
   const quickButton = event.target.closest('[data-quick]');
   const actionButton = event.target.closest('[data-action]');
   const artifactButton = event.target.closest('[data-artifact]');
   const downloadButton = event.target.closest('[data-download]');
   const copyButton = event.target.closest('[data-copy]');
   const skillSelectButton = event.target.closest('[data-skill-select]');
+  const settingsSectionButton = event.target.closest('[data-settings-section]');
   const branchMessageButton = event.target.closest('[data-branch-message]');
 
-  if (branchMessageButton) {
-    branchConversation(branchMessageButton.dataset.branchMessage);
-    return;
-  }
-
+  if (branchMessageButton) return branchConversation(branchMessageButton.dataset.branchMessage);
   if (conversationButton) {
     const activeConversation = Number(conversationButton.dataset.conversation);
-    const conversation = state.conversations.find((item) => item.id === activeConversation);
-    setState({ activeConversation, activeProject: conversation?.projectId ?? null });
-    return;
+    const conversation = conversationById(activeConversation);
+    return setState({ activeConversation, activeProject: conversation?.projectId ?? null, view: 'chat' });
   }
-
-  if (projectButton) {
-    moveConversationToProject(projectButton.dataset.project === 'outside' ? null : projectButton.dataset.project);
-    return;
-  }
-
-  if (quickButton) {
-    focusPrompt(quickButton.dataset.quick);
-    return;
-  }
-
-  if (artifactButton) {
-    setState({ activeArtifact: artifactButton.dataset.artifact });
-    return;
-  }
-
-  if (downloadButton) {
-    downloadArtifact(downloadButton.dataset.download);
-    return;
-  }
-
-  if (copyButton) {
-    copyArtifact(copyButton.dataset.copy);
-    return;
-  }
-
-  if (skillSelectButton) {
-    setState({ activeSkill: skillSelectButton.dataset.skillSelect });
-    return;
-  }
-
+  if (openProjectButton) return openProjectDetail(openProjectButton.dataset.openProject);
+  if (quickButton) return focusPrompt(quickButton.dataset.quick);
+  if (artifactButton) return setState({ activeArtifact: artifactButton.dataset.artifact, view: 'artifacts' });
+  if (downloadButton) return downloadArtifact(downloadButton.dataset.download);
+  if (copyButton) return copyArtifact(copyButton.dataset.copy);
+  if (skillSelectButton) return setState({ activeSkill: skillSelectButton.dataset.skillSelect, skillViewMode: 'preview', skillFileError: '' });
+  if (settingsSectionButton) return setState({ settingsSection: settingsSectionButton.dataset.settingsSection });
   if (!actionButton) return;
 
   const action = actionButton.dataset.action;
   if (action === 'new-chat') newConversation();
+  if (action === 'send-message') sendMessageFromCurrentView();
   if (action === 'branch-chat') branchConversation();
-  if (action === 'send-message') addMessage();
-  if (action === 'toggle-skills') setState({ showSkills: !state.showSkills });
-  if (action === 'show-projects') document.querySelector('#project-rail')?.scrollIntoView({ behavior: 'smooth' });
-  if (action === 'show-artifacts') document.querySelector('#artifact-panel')?.scrollIntoView({ behavior: 'smooth' });
-  if (action === 'show-chats') document.querySelector('#recent-list')?.scrollIntoView({ behavior: 'smooth' });
-  if (action === 'focus-prompt') focusPrompt();
-  if (action === 'add-skill') addCustomSkill();
-  if (action === 'save-skill') saveSkillEditor();
-  if (action === 'copy-skill') copyText(skillAsMarkdown(selectedSkill()));
-  if (action === 'download-skill') downloadText(`${selectedSkill().name.toLowerCase().replaceAll(' ', '-')}.skill.md`, skillAsMarkdown(selectedSkill()));
-  if (action === 'duplicate-skill') duplicateSelectedSkill();
-  if (action === 'delete-skill') deleteSelectedSkill();
-  if (action === 'save-memory') saveMemoryEditors();
-  if (action === 'copy-memory') copyText(currentMemoryMarkdown());
-  if (action === 'download-memory') downloadText('workspace-memory.md', currentMemoryMarkdown());
+  if (action === 'show-chat') setState({ view: 'chat' });
+  if (action === 'show-projects') setState({ view: 'projects' });
+  if (action === 'show-artifacts') setState({ view: 'artifacts' });
+  if (action === 'show-customize') setState({ view: 'customize' });
+  if (action === 'show-customize-skills') setState({ customizeSection: 'skills' });
+  if (action === 'show-customize-connectors') {
+    setState({ customizeSection: 'connectors' });
+    loadAtlassianConnectorStatus();
+  }
+  if (action === 'show-settings') setState({ settingsOpen: true, settingsSection: 'general' });
+  if (action === 'close-settings') setState({ settingsOpen: false });
+  if (action === 'open-project-memory') openMemoryModal('project');
+  if (action === 'open-global-memory') openMemoryModal('global');
+  if (action === 'close-memory-modal') closeMemoryModal();
+  if (action === 'edit-memory-modal') startMemoryModalEditing();
+  if (action === 'cancel-memory-modal-edit') setState({ memoryModalEditing: false });
+  if (action === 'save-memory-modal') saveMemoryModal();
+  if (action === 'toggle-sidebar') setState({ sidebarCollapsed: !state.sidebarCollapsed });
+  if (action === 'focus-search') document.querySelector('#project-search, .settings-search input')?.focus();
+  if (action === 'new-project') createNewProject();
+  if (action === 'copy-project-memory') copyText(projectMemoryMarkdown());
+  if (action === 'save-settings') saveSettings();
+  if (action === 'copy-global-memory') copyText(globalMemoryMarkdown());
+  if (action === 'download-global-memory') downloadText('global-memory.md', globalMemoryMarkdown());
+  if (action === 'write-skill-instructions') openSkillModal('create');
+  if (action === 'upload-skill') document.querySelector('.skill-upload-input')?.click();
+  if (action === 'close-skill-modal') closeSkillModal();
+  if (action === 'save-skill-modal') saveSkillModal();
+  if (action === 'try-skill-in-chat') useSelectedSkillInChat();
+  if (action === 'edit-skill') openSkillModal('edit');
+  if (action === 'edit-skill-with-claude') useSelectedSkillInChat(true);
+  if (action === 'replace-skill') document.querySelector('.skill-replace-input')?.click();
+  if (action === 'download-skill') downloadText(`${selectedSkill().name.toLowerCase().replaceAll(' ', '-')}.md`, skillAsMarkdown(selectedSkill()));
+  if (action === 'uninstall-skill') uninstallSelectedSkill();
+  if (action === 'show-skill-preview') setState({ skillViewMode: 'preview' });
+  if (action === 'show-skill-raw') setState({ skillViewMode: 'raw' });
+  if (action === 'connect-atlassian') connectAtlassian();
+  if (action === 'test-atlassian') testAtlassianConnector();
+  if (action === 'disconnect-atlassian') disconnectAtlassian();
 }
 
 function handleChange(event) {
+  if (event.target.matches('.skill-upload-input')) {
+    const [file] = event.target.files || [];
+    importSkillFile(file);
+    return;
+  }
+  if (event.target.matches('.skill-replace-input')) {
+    const [file] = event.target.files || [];
+    replaceSelectedSkillFile(file);
+    return;
+  }
   if (event.target.id === 'model-select') {
-    state.conversations = state.conversations.map((conversation) => (conversation.id === state.activeConversation ? { ...conversation, model: event.target.value } : conversation));
+    state.conversations = state.conversations.map((conversation) => (
+      conversation.id === state.activeConversation ? { ...conversation, model: event.target.value } : conversation
+    ));
     setState({ model: event.target.value });
   }
   if (event.target.id === 'tone-select') setState({ tone: event.target.value });
   if (event.target.id === 'save-key') setState({ apiKeySaved: event.target.checked });
   if (event.target.dataset.skill) {
     const id = event.target.dataset.skill;
-    const skills = activeSkills().map((skill) => (skill.id === id ? { ...skill, active: event.target.checked } : skill));
-    setState({ skills });
+    setState({ skills: activeSkills().map((skill) => (skill.id === id ? { ...skill, active: event.target.checked } : skill)) });
   }
 }
 
 function handleInput(event) {
+  if (event.target.closest('.skill-modal-fields')) updateSkillModalSubmitState();
   if (event.target.id === 'api-key-input') {
     state.apiKey = event.target.value.trim();
     if (state.apiKeySaved) saveState();
+  }
+  if (event.target.id === 'project-search') {
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll('[data-project-name]').forEach((card) => {
+      card.hidden = query && !card.dataset.projectName.includes(query);
+    });
   }
 }
 
 function handleKeydown(event) {
   if (event.target.id === 'prompt-input' && event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
-    addMessage();
+    sendMessageFromCurrentView();
   }
+  if (event.key === 'Escape' && state.skillModalMode) {
+    closeSkillModal();
+  } else if (event.key === 'Escape' && document.querySelector('.skill-create-disclosure[open], .skill-actions-disclosure[open]')) {
+    document.querySelectorAll('.skill-create-disclosure[open]').forEach((menu) => menu.removeAttribute('open'));
+    document.querySelectorAll('.skill-actions-disclosure[open]').forEach((menu) => menu.removeAttribute('open'));
+  } else if (event.key === 'Escape' && state.memoryModalScope) closeMemoryModal();
+  else if (event.key === 'Escape' && state.settingsOpen) setState({ settingsOpen: false });
+}
+
+function renderCurrentView() {
+  if (state.view === 'projects') return renderProjectsView();
+  if (state.view === 'project') return renderProjectDetailView();
+  if (state.view === 'customize') return renderCustomizeView();
+  if (state.view === 'artifacts') return renderArtifactsView();
+  return renderChatView();
 }
 
 function render() {
+  const standaloneView = state.view === 'customize' || state.view === 'artifacts';
   app.innerHTML = `
-    <div class="shell">
-      ${renderSidebar()}
-      ${renderProjectRail()}
-      ${renderChat()}
-      ${renderInspector()}
+    <div class="app-window">
+      ${standaloneView ? `
+        <div class="standalone-shell">
+          ${renderWindowBar()}
+          ${renderCurrentView()}
+        </div>
+      ` : `
+        <div class="app-body">
+          ${renderSidebar()}
+          ${renderCurrentView()}
+        </div>
+      `}
+      ${renderSettingsModal()}
+      ${renderMemoryModal()}
+      ${renderSkillModal()}
     </div>
   `;
   document.querySelector('#messages')?.scrollTo({ top: 999999 });
@@ -1210,3 +2041,4 @@ app.addEventListener('change', handleChange);
 app.addEventListener('input', handleInput);
 app.addEventListener('keydown', handleKeydown);
 render();
+if (state.view === 'customize' && state.customizeSection === 'connectors') loadAtlassianConnectorStatus();

@@ -11,6 +11,8 @@ const ANTHROPIC_VERSION = '2023-06-01';
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const MAX_TOOL_LOOPS = 4;
+let runtimeAtlassianConfig = null;
+let atlassianDisconnected = false;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -178,15 +180,51 @@ function atlassianTools() {
   ];
 }
 
-function isAtlassianConfigured() {
-  return Boolean(process.env.ATLASSIAN_BASE_URL && process.env.ATLASSIAN_EMAIL && process.env.ATLASSIAN_API_TOKEN);
+function envAtlassianConfig() {
+  const baseUrl = String(process.env.ATLASSIAN_BASE_URL || '').replace(/\/$/, '');
+  const email = String(process.env.ATLASSIAN_EMAIL || '').trim();
+  const apiToken = String(process.env.ATLASSIAN_API_TOKEN || '').trim();
+  return baseUrl && email && apiToken ? { baseUrl, email, apiToken, source: 'environment' } : null;
 }
 
-function atlassianAuthHeaders() {
-  const email = process.env.ATLASSIAN_EMAIL;
-  const token = process.env.ATLASSIAN_API_TOKEN;
-  if (!email || !token) return null;
-  return { authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`, accept: 'application/json' };
+function currentAtlassianConfig() {
+  if (runtimeAtlassianConfig) return runtimeAtlassianConfig;
+  if (atlassianDisconnected) return null;
+  return envAtlassianConfig();
+}
+
+function isAtlassianConfigured() {
+  return Boolean(currentAtlassianConfig());
+}
+
+function atlassianAuthHeaders(config = currentAtlassianConfig()) {
+  if (!config?.email || !config?.apiToken) return null;
+  return { authorization: `Basic ${Buffer.from(`${config.email}:${config.apiToken}`).toString('base64')}`, accept: 'application/json' };
+}
+
+function normalizeAtlassianBaseUrl(value = '') {
+  let url;
+  try {
+    url = new URL(String(value).trim());
+  } catch {
+    throw new Error('URL Atlassian tidak valid.');
+  }
+  if (url.protocol !== 'https:') throw new Error('URL Atlassian harus menggunakan HTTPS.');
+  if (url.username || url.password || url.search || url.hash) throw new Error('Gunakan URL dasar Atlassian tanpa kredensial, query, atau hash.');
+  if (!/^\/*$/.test(url.pathname)) throw new Error('Gunakan URL dasar Atlassian tanpa path tambahan.');
+  return url.origin;
+}
+
+function publicAtlassianStatus(extra = {}) {
+  const config = currentAtlassianConfig();
+  return {
+    connected: Boolean(config),
+    baseUrl: config?.baseUrl || '',
+    email: config?.email || '',
+    source: config?.source || '',
+    tools: config ? atlassianTools().map((tool) => tool.name) : [],
+    ...extra,
+  };
 }
 
 function jiraDocument(text = '') {
@@ -206,11 +244,10 @@ function truncateToolResult(value, maxChars = 40000) {
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n…[tool result truncated]` : text;
 }
 
-async function atlassianRequest(pathname, options = {}) {
-  const baseUrl = String(process.env.ATLASSIAN_BASE_URL || '').replace(/\/$/, '');
-  const headers = atlassianAuthHeaders();
-  if (!baseUrl || !headers) throw new Error('Atlassian connector belum dikonfigurasi. Set ATLASSIAN_BASE_URL, ATLASSIAN_EMAIL, dan ATLASSIAN_API_TOKEN.');
-  const response = await fetch(`${baseUrl}${pathname}`, {
+async function atlassianRequest(pathname, options = {}, config = currentAtlassianConfig()) {
+  const headers = atlassianAuthHeaders(config);
+  if (!config?.baseUrl || !headers) throw new Error('Atlassian connector belum dikonfigurasi. Hubungkan akun dari halaman Connectors atau set environment server.');
+  const response = await fetch(`${config.baseUrl}${pathname}`, {
     ...options,
     headers: { ...headers, ...(options.body ? { 'content-type': 'application/json' } : {}), ...(options.headers || {}) },
   });
@@ -222,6 +259,51 @@ async function atlassianRequest(pathname, options = {}) {
     throw new Error(`Atlassian request gagal (${response.status}): ${detail}`);
   }
   return data;
+}
+
+async function testAtlassianConnection(config = currentAtlassianConfig()) {
+  if (!config) throw new Error('Atlassian connector belum dikonfigurasi.');
+  const [jiraUser, confluenceSpaces] = await Promise.all([
+    atlassianRequest('/rest/api/3/myself', {}, config),
+    atlassianRequest('/wiki/api/v2/spaces?limit=1', {}, config),
+  ]);
+  return {
+    displayName: jiraUser?.displayName || config.email,
+    accountId: jiraUser?.accountId || '',
+    jira: true,
+    confluence: Array.isArray(confluenceSpaces?.results),
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+async function handleAtlassianConnect(req, res) {
+  const rawBody = await readRequestBody(req);
+  const body = rawBody ? JSON.parse(rawBody) : {};
+  const config = {
+    baseUrl: normalizeAtlassianBaseUrl(body.baseUrl),
+    email: String(body.email || '').trim(),
+    apiToken: String(body.apiToken || '').trim(),
+    source: 'session',
+  };
+  if (!config.email || !config.apiToken) {
+    sendJson(res, 400, { error: 'Email dan API token Atlassian wajib diisi.' });
+    return;
+  }
+  const verification = await testAtlassianConnection(config);
+  runtimeAtlassianConfig = config;
+  atlassianDisconnected = false;
+  sendJson(res, 200, publicAtlassianStatus(verification));
+}
+
+async function handleAtlassianTest(_req, res) {
+  const verification = await testAtlassianConnection();
+  sendJson(res, 200, publicAtlassianStatus(verification));
+}
+
+function handleAtlassianDisconnect(res) {
+  runtimeAtlassianConfig = null;
+  atlassianDisconnected = true;
+  sendJson(res, 200, publicAtlassianStatus());
 }
 
 async function executeAtlassianTool(tool, context = {}) {
@@ -532,6 +614,22 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'GET' && req.url === '/api/connectors/atlassian') {
+    sendJson(res, 200, publicAtlassianStatus());
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/api/connectors/atlassian/connect') {
+    handleAtlassianConnect(req, res).catch((error) => sendJson(res, error.status || 502, { error: error.message || 'Koneksi Atlassian gagal.' }));
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/api/connectors/atlassian/test') {
+    handleAtlassianTest(req, res).catch((error) => sendJson(res, error.status || 502, { error: error.message || 'Tes koneksi Atlassian gagal.' }));
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/api/connectors/atlassian/disconnect') {
+    handleAtlassianDisconnect(res);
+    return;
+  }
   if (req.method === 'POST' && req.url === '/api/chat') {
     handleChat(req, res, false).catch((error) => sendJson(res, error.status || 500, { error: error.message || 'Server error.' }));
     return;
@@ -561,4 +659,17 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildSystemPrompt, buildMemoryPrompt, atlassianTools, isAtlassianConfigured, executeAtlassianTool, parseAnthropicStream, truncateToolResult, fetchAnthropic, server };
+module.exports = {
+  buildSystemPrompt,
+  buildMemoryPrompt,
+  atlassianTools,
+  isAtlassianConfigured,
+  executeAtlassianTool,
+  parseAnthropicStream,
+  truncateToolResult,
+  fetchAnthropic,
+  normalizeAtlassianBaseUrl,
+  publicAtlassianStatus,
+  testAtlassianConnection,
+  server,
+};

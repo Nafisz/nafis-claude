@@ -42,7 +42,13 @@ test('memory generation prompt uses Claude-like headings and strict project scop
   assert.match(prompt, /Do not generalize project facts into account-wide preferences/);
 });
 
-const { atlassianTools, truncateToolResult, executeAtlassianTool } = require('../server');
+const {
+  atlassianTools,
+  truncateToolResult,
+  executeAtlassianTool,
+  normalizeAtlassianBaseUrl,
+  testAtlassianConnection,
+} = require('../server');
 
 test('Atlassian tool registry exposes read and explicit-write operations with strict schemas', () => {
   const tools = atlassianTools();
@@ -58,6 +64,42 @@ test('Atlassian tool registry exposes read and explicit-write operations with st
   ]);
   assert.ok(tools.every((tool) => tool.input_schema.additionalProperties === false));
   assert.match(tools.find((tool) => tool.name === 'atlassian_confluence_update_page').description, /explicitly/);
+});
+
+test('Atlassian connector accepts a secure base URL and strips trailing slashes', () => {
+  assert.equal(normalizeAtlassianBaseUrl('https://example.atlassian.net///'), 'https://example.atlassian.net');
+  assert.throws(() => normalizeAtlassianBaseUrl('http://example.atlassian.net'), /HTTPS/);
+  assert.throws(() => normalizeAtlassianBaseUrl('https://example.atlassian.net/wiki'), /path tambahan/);
+  assert.throws(() => normalizeAtlassianBaseUrl('not-a-url'), /tidak valid/);
+});
+
+test('Atlassian connection verification checks Jira and Confluence access', async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('/rest/api/3/myself')) {
+      return new Response(JSON.stringify({ accountId: 'abc', displayName: 'QA User' }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ results: [{ id: 'space-1' }] }), { status: 200 });
+  };
+  try {
+    const result = await testAtlassianConnection({
+      baseUrl: 'https://example.atlassian.net',
+      email: 'qa@example.com',
+      apiToken: 'test-token',
+      source: 'session',
+    });
+    assert.deepEqual(calls, [
+      'https://example.atlassian.net/rest/api/3/myself',
+      'https://example.atlassian.net/wiki/api/v2/spaces?limit=1',
+    ]);
+    assert.equal(result.displayName, 'QA User');
+    assert.equal(result.jira, true);
+    assert.equal(result.confluence, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('system prompt does not pretend Atlassian is available when connector is missing', () => {

@@ -1,0 +1,18 @@
+{
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/artifacts/[id]/download/route": "app/api/artifacts/[id]/download/route.js",
+  "/api/artifacts/route": "app/api/artifacts/route.js",
+  "/api/bootstrap/route": "app/api/bootstrap/route.js",
+  "/api/chat/route": "app/api/chat/route.js",
+  "/api/files/route": "app/api/files/route.js",
+  "/api/memory/route": "app/api/memory/route.js",
+  "/api/projects/[id]/route": "app/api/projects/[id]/route.js",
+  "/api/projects/route": "app/api/projects/route.js",
+  "/api/sessions/[id]/route": "app/api/sessions/[id]/route.js",
+  "/api/sessions/route": "app/api/sessions/route.js",
+  "/api/tools/approve/route": "app/api/tools/approve/route.js",
+  "/api/tools/rovo/route": "app/api/tools/rovo/route.js",
+  "/favicon.ico/route": "app/favicon.ico/route.js",
+  "/page": "app/page.js"
+}
