@@ -2,7 +2,12 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
-const { formatRetrievedMemory, buildMemoryUpdatePrompt, validateMemoryDocument } = require('./lib/memory');
+const {
+  formatRetrievedMemory,
+  formatRetrievedProjectFiles,
+  buildMemoryUpdatePrompt,
+  validateMemoryDocument,
+} = require('./lib/memory');
 const { formatTriggeredSkills, isMutationAuthorized, runAgentLoop, runJsonAgentLoop } = require('./lib/orchestration');
 
 const PORT = Number(process.env.PORT || 4173);
@@ -86,14 +91,46 @@ function normalizeMessages(messages = []) {
   }, []);
 }
 
-function buildSystemPrompt({ project, skills, tone, globalMemory, sessionSummary, contextMeta, lastUserMessage, atlassianConfigured = false }) {
+function selectRequestedTools(tools = [], requestedNames = []) {
+  const requested = [...new Set((Array.isArray(requestedNames) ? requestedNames : []).map(String).filter(Boolean))];
+  if (!requested.length) return { explicit: false, tools, names: [], unknownNames: [] };
+  const knownNames = new Set(tools.map((tool) => tool.name));
+  return {
+    explicit: true,
+    tools: tools.filter((tool) => requested.includes(tool.name)),
+    names: requested.filter((name) => knownNames.has(name)),
+    unknownNames: requested.filter((name) => !knownNames.has(name)),
+  };
+}
+
+function buildSystemPrompt({
+  project,
+  skills,
+  tone,
+  globalMemory,
+  sessionSummary,
+  contextMeta,
+  lastUserMessage,
+  atlassianConfigured = false,
+  explicitSkillIds = [],
+  explicitToolNames = [],
+  explicitToolsRequested = false,
+}) {
+  const selectedSkillIds = (Array.isArray(explicitSkillIds) ? explicitSkillIds : [])
+    .map(String)
+    .filter((id) => (skills || []).some((skill) => skill?.active && String(skill.id) === id));
   const projectInstructions = project?.systemPrompt || project?.baseMemory || '';
   const retrievedMemory = formatRetrievedMemory({
     globalMemory,
     projectMemory: project?.generatedMemory || '',
     query: lastUserMessage,
   });
-  const triggeredSkills = formatTriggeredSkills(skills || [], lastUserMessage);
+  const retrievedProjectFiles = formatRetrievedProjectFiles({
+    files: project?.files,
+    query: lastUserMessage,
+  });
+  const triggeredSkills = formatTriggeredSkills(skills || [], lastUserMessage, selectedSkillIds);
+  const selectedToolNames = (Array.isArray(explicitToolNames) ? explicitToolNames : []).filter(Boolean);
 
   return [
     'Kamu adalah asisten chat yang mengikuti pola Claude: jelas, tenang, aman, dan langsung membantu.',
@@ -101,8 +138,17 @@ function buildSystemPrompt({ project, skills, tone, globalMemory, sessionSummary
     `Intensitas berpikir: ${tone || 'Sedang'}.`,
     projectInstructions ? `## Project Instructions\n${projectInstructions}` : '',
     retrievedMemory ? `## Relevant Memory\n${retrievedMemory}` : '',
+    retrievedProjectFiles ? `## Retrieved Project Files\n${retrievedProjectFiles}` : '',
     sessionSummary ? `## Session Summary\n${sessionSummary}` : '',
     triggeredSkills ? `---\n## Triggered Skills\n${triggeredSkills}` : '',
+    selectedSkillIds.length
+      ? `Skill yang dipilih eksplisit oleh user: ${selectedSkillIds.join(', ')}. Terapkan skill tersebut meskipun kata pemicunya tidak muncul di prompt.`
+      : '',
+    selectedToolNames.length
+      ? `Tool yang dipilih eksplisit oleh user: ${selectedToolNames.join(', ')}. Prioritaskan tool tersebut jika informasi inputnya cukup; jangan mengarang parameter yang belum diberikan.`
+      : explicitToolsRequested
+        ? 'User memilih tool secara eksplisit, tetapi tool tersebut tidak tersedia. Jelaskan keterbatasannya dengan singkat.'
+        : '',
     atlassianConfigured
       ? 'Tools yang tersedia hanya Atlassian Jira dan Confluence. Jangan mengklaim memakai browser/web search.'
       : 'Connector Atlassian belum dikonfigurasi. Jangan mencoba atau mengklaim memakai Jira/Confluence; jelaskan bahwa kredensial server perlu dipasang jika data workspace dibutuhkan.',
@@ -484,8 +530,16 @@ async function handleChat(req, res, stream = false) {
   const model = String(body.model || DEFAULT_MODEL);
   const lastUserMessage = textFromContent(messages[messages.length - 1].content);
   const atlassianConfigured = isAtlassianConfigured();
-  const system = buildSystemPrompt({ ...body, lastUserMessage, atlassianConfigured });
-  const tools = atlassianConfigured ? atlassianTools() : [];
+  const availableTools = atlassianConfigured ? atlassianTools() : [];
+  const toolSelection = selectRequestedTools(availableTools, body.explicitToolNames);
+  const tools = toolSelection.tools;
+  const system = buildSystemPrompt({
+    ...body,
+    lastUserMessage,
+    atlassianConfigured,
+    explicitToolNames: toolSelection.names,
+    explicitToolsRequested: toolSelection.explicit,
+  });
 
   if (!stream) {
     const result = await runJsonAgentLoop({
@@ -570,11 +624,19 @@ async function handleCountTokens(req, res) {
   const model = String(body.model || DEFAULT_MODEL);
   const messages = normalizeMessages(body.messages);
   const atlassianConfigured = isAtlassianConfigured();
-  const system = buildSystemPrompt({ ...body, lastUserMessage: textFromContent(messages.at(-1)?.content), atlassianConfigured });
+  const availableTools = atlassianConfigured ? atlassianTools() : [];
+  const toolSelection = selectRequestedTools(availableTools, body.explicitToolNames);
+  const system = buildSystemPrompt({
+    ...body,
+    lastUserMessage: textFromContent(messages.at(-1)?.content),
+    atlassianConfigured,
+    explicitToolNames: toolSelection.names,
+    explicitToolsRequested: toolSelection.explicit,
+  });
   const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': apiKey },
-    body: JSON.stringify({ model, system, messages, ...(atlassianConfigured ? { tools: atlassianTools() } : {}) }),
+    body: JSON.stringify({ model, system, messages, ...(toolSelection.tools.length ? { tools: toolSelection.tools } : {}) }),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -661,6 +723,7 @@ if (require.main === module) {
 
 module.exports = {
   buildSystemPrompt,
+  selectRequestedTools,
   buildMemoryPrompt,
   atlassianTools,
   isAtlassianConfigured,

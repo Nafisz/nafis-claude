@@ -4,6 +4,10 @@ const STORAGE_KEY = 'nafisClaudeWorkspace:v2';
 const CONTEXT_CHAR_BUDGET = 3_200_000;
 const SESSION_SUMMARY_TRIGGER = 14;
 const MEMORY_UPDATE_TURN_INTERVAL = 6;
+const MAX_PROJECT_FILE_BYTES = 500_000;
+const MAX_PROJECT_TOTAL_BYTES = 1_200_000;
+const MAX_PROJECT_FILES = 12;
+const PROJECT_FILE_EXTENSIONS = new Set(['md', 'txt', 'json', 'csv', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'xml', 'yaml', 'yml']);
 
 const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
 const MEMORY_SECTION_TITLES = [
@@ -62,6 +66,17 @@ const defaultSkills = [
   },
 ];
 
+const promptToolCommands = [
+  { id: 'atlassian_confluence_search', command: 'confluence-search', label: 'Search Confluence', description: 'Cari halaman Confluence dari kata kunci.' },
+  { id: 'atlassian_confluence_get_page', command: 'confluence-page', label: 'Read Confluence page', description: 'Baca satu halaman Confluence berdasarkan page ID.' },
+  { id: 'atlassian_confluence_update_page', command: 'confluence-update', label: 'Update Confluence page', description: 'Perbarui halaman Confluence setelah membaca versi terbaru.' },
+  { id: 'atlassian_jira_search', command: 'jira-search', label: 'Search Jira', description: 'Cari issue Jira dengan teks atau JQL.' },
+  { id: 'atlassian_jira_get_issue', command: 'jira-issue', label: 'Read Jira issue', description: 'Baca satu issue Jira berdasarkan issue key.' },
+  { id: 'atlassian_jira_create_issue', command: 'jira-create', label: 'Create Jira issue', description: 'Buat issue Jira saat diminta secara eksplisit.' },
+  { id: 'atlassian_jira_update_issue', command: 'jira-update', label: 'Update Jira issue', description: 'Perbarui field issue Jira yang dipilih.' },
+  { id: 'atlassian_jira_add_comment', command: 'jira-comment', label: 'Comment on Jira issue', description: 'Tambahkan komentar ke issue Jira.' },
+];
+
 const defaultProjects = [
   {
     id: 'nova',
@@ -93,6 +108,17 @@ const welcomeMessage = {
   createdAt: new Date().toISOString(),
 };
 
+const defaultBriefContent = '# Brief Proyek\n\nGunakan panel ini untuk menyimpan context project yang dapat diretrieve oleh AI.';
+const defaultProjectFile = {
+  id: crypto.randomUUID(),
+  name: 'brief-proyek.md',
+  type: 'text/markdown',
+  size: new Blob([defaultBriefContent]).size,
+  content: defaultBriefContent,
+  included: true,
+  addedAt: new Date().toISOString(),
+};
+
 const initialState = {
   model: DEFAULT_MODEL_ID,
   tone: 'Sedang',
@@ -116,11 +142,18 @@ const initialState = {
   connectorStatus: { loading: false, connected: false, baseUrl: '', email: '', source: '', displayName: '', checkedAt: '', error: '' },
   connectorBusy: '',
   projectMemoryEditing: false,
+  projectInstructionModalOpen: false,
+  projectInstructions: {},
+  projectFiles: { nova: [defaultProjectFile] },
+  projectFilesMigrated: true,
+  projectFileError: '',
   memoryModalScope: null,
   memoryModalEditing: false,
   isSending: false,
   isMemoryUpdating: false,
   streamingMessageId: null,
+  promptDraft: '',
+  promptCommands: [],
   tokenCount: null,
   error: '',
   globalMemory: '',
@@ -175,6 +208,8 @@ function loadState() {
       isMemoryUpdating: false,
       error: '',
       streamingMessageId: null,
+      promptDraft: '',
+      promptCommands: [],
       tokenCount: stored.tokenCount || null,
       projectMemories: stored.projectMemories || {},
       sessionSummaries: stored.sessionSummaries || {},
@@ -195,6 +230,26 @@ function loadState() {
       connectorStatus: { ...initialState.connectorStatus },
       connectorBusy: '',
       projectMemoryEditing: false,
+      projectInstructionModalOpen: false,
+      projectInstructions: stored.projectInstructions || {},
+      projectFiles: stored.projectFilesMigrated
+        ? stored.projectFiles || {}
+        : {
+            ...(stored.projectFiles || {}),
+            nova: (stored.projectFiles?.nova?.length
+              ? stored.projectFiles.nova
+              : (stored.artifacts || []).filter((artifact) => artifact.name === 'brief-proyek.md').map((artifact) => ({
+                  id: crypto.randomUUID(),
+                  name: artifact.name,
+                  type: 'text/markdown',
+                  size: new Blob([artifact.content || '']).size,
+                  content: artifact.content || '',
+                  included: true,
+                  addedAt: artifact.createdAt || new Date().toISOString(),
+                }))),
+          },
+      projectFilesMigrated: true,
+      projectFileError: '',
       memoryModalScope: null,
       memoryModalEditing: false,
     };
@@ -204,7 +259,16 @@ function loadState() {
 }
 
 function saveState() {
-  const { connectorStatus, connectorBusy, skillFileError, ...persistableState } = state;
+  const {
+    connectorStatus,
+    connectorBusy,
+    skillFileError,
+    promptDraft,
+    promptCommands,
+    projectInstructionModalOpen,
+    projectFileError,
+    ...persistableState
+  } = state;
   const persisted = {
     ...persistableState,
     apiKey: state.apiKeySaved ? state.apiKey : '',
@@ -261,13 +325,32 @@ function generatedProjectMemory(projectId) {
   return state.projectMemories?.[projectId] || '';
 }
 
+function projectInstruction(project) {
+  if (!project) return '';
+  if (Object.prototype.hasOwnProperty.call(state.projectInstructions || {}, project.id)) {
+    return state.projectInstructions[project.id] || '';
+  }
+  return project.systemPrompt || project.memory || '';
+}
+
+function projectFiles(projectId) {
+  return state.projectFiles?.[projectId] || [];
+}
+
+function selectedProjectFiles(projectId) {
+  return projectFiles(projectId)
+    .filter((file) => file.included !== false)
+    .map((file) => ({ name: file.name, type: file.type || 'text/plain', content: file.content }));
+}
+
 function combineProjectMemory(project) {
   if (!project) return null;
   const generatedMemory = generatedProjectMemory(project.id);
   return {
     ...project,
     baseMemory: project.memory,
-    systemPrompt: project.systemPrompt || project.memory || '',
+    systemPrompt: projectInstruction(project),
+    files: selectedProjectFiles(project.id),
     generatedMemory,
     memory: [project.memory, generatedMemory && `Generated memory:\n${generatedMemory}`].filter(Boolean).join('\n\n'),
   };
@@ -305,6 +388,44 @@ function skillAsMarkdown(skill) {
     '',
     skill.content || '-',
   ].join('\n');
+}
+
+function commandSlug(value = '') {
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function promptCommandOptions() {
+  const skillCommands = activeSkills()
+    .filter((skill) => skill.active)
+    .map((skill) => ({
+      key: `skill:${skill.id}`,
+      kind: 'skill',
+      command: commandSlug(skill.name) || commandSlug(skill.id),
+      label: skill.name,
+      description: skill.description || 'Jalankan skill ini untuk prompt berikutnya.',
+      target: skill.id,
+    }));
+  const toolCommands = promptToolCommands.map((tool) => ({
+    key: `tool:${tool.id}`,
+    kind: 'tool',
+    command: tool.command,
+    label: tool.label,
+    description: tool.description,
+    target: tool.id,
+  }));
+  return [...skillCommands, ...toolCommands];
+}
+
+function selectedPromptTriggers() {
+  const commands = state.promptCommands || [];
+  return {
+    explicitSkillIds: commands.filter((command) => command.kind === 'skill').map((command) => command.target),
+    explicitToolNames: commands.filter((command) => command.kind === 'tool').map((command) => command.target),
+  };
 }
 
 function sanitizeMarkdownHtml(html) {
@@ -445,7 +566,7 @@ function contextMeta() {
   return `Mengirim ${stats.sentMessages}/${stats.totalMessages} pesan (${stats.sentChars}/${stats.totalChars} karakter) + ${stats.hasSummary ? 'session summary' : 'tanpa summary'} + memory.`;
 }
 
-async function refreshTokenCount() {
+async function refreshTokenCount(triggers = selectedPromptTriggers()) {
   if (!state.apiKey) return;
   try {
     const response = await fetch('/api/count-tokens', {
@@ -460,6 +581,7 @@ async function refreshTokenCount() {
         sessionSummary: currentSessionSummary(),
         contextMeta: contextMeta(),
         skills: activeSkills(),
+        ...triggers,
         messages: buildContextMessages(),
       }),
     });
@@ -672,7 +794,7 @@ async function disconnectAtlassian() {
   }
 }
 
-async function requestClaude(prompt, assistantId, conversationId) {
+async function requestClaude(prompt, assistantId, conversationId, triggers = {}) {
   const response = await fetch('/api/chat-stream', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -685,6 +807,8 @@ async function requestClaude(prompt, assistantId, conversationId) {
       sessionSummary: currentSessionSummary(),
       contextMeta: contextMeta(),
       skills: activeSkills(),
+      explicitSkillIds: triggers.explicitSkillIds || [],
+      explicitToolNames: triggers.explicitToolNames || [],
       messages: buildContextMessages(),
     }),
   });
@@ -768,11 +892,18 @@ async function requestClaude(prompt, assistantId, conversationId) {
 
 async function addMessage() {
   const input = document.querySelector('#prompt-input');
-  const prompt = input.value.trim();
+  const prompt = (input?.value || state.promptDraft || '').trim();
   if (!prompt || state.isSending) return;
 
   const conversationId = state.activeConversation;
-  const userMessage = { id: crypto.randomUUID(), role: 'user', text: prompt, createdAt: new Date().toISOString() };
+  const triggers = selectedPromptTriggers();
+  const userMessage = {
+    id: crypto.randomUUID(),
+    role: 'user',
+    text: prompt,
+    triggerCommands: (state.promptCommands || []).map(({ kind, command, label }) => ({ kind, command, label })),
+    createdAt: new Date().toISOString(),
+  };
   const assistantId = crypto.randomUUID();
   const assistantPlaceholder = { id: assistantId, role: 'assistant', text: '', actions: [], model: currentModelId(), createdAt: new Date().toISOString() };
 
@@ -780,14 +911,16 @@ async function addMessage() {
   updateConversationPreview(prompt);
   state.isSending = true;
   state.streamingMessageId = assistantId;
+  state.promptDraft = '';
+  state.promptCommands = [];
   state.error = '';
   saveState();
   render();
-  refreshTokenCount();
+  refreshTokenCount(triggers);
 
   let reply;
   try {
-    reply = await requestClaude(prompt, assistantId, conversationId);
+    reply = await requestClaude(prompt, assistantId, conversationId, triggers);
   } catch (error) {
     reply = createLocalFallback(prompt);
     state.error = error.message;
@@ -889,6 +1022,126 @@ function copyArtifact(artifactId) {
   const artifact = state.artifacts.find((item) => item.id === artifactId);
   if (!artifact) return;
   navigator.clipboard.writeText(artifact.content);
+}
+
+function formatFileSize(bytes = 0) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 102.4) / 10} KB`;
+  return `${Math.round(bytes / (1024 * 102.4)) / 10} MB`;
+}
+
+function projectFileExtension(name = '') {
+  return String(name).split('.').pop()?.toLowerCase() || '';
+}
+
+function openProjectInstructionModal() {
+  state.projectInstructionModalOpen = true;
+  render();
+  document.querySelector('#project-instruction-editor')?.focus();
+}
+
+function closeProjectInstructionModal() {
+  setState({ projectInstructionModalOpen: false });
+}
+
+function saveProjectInstruction() {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  const instruction = document.querySelector('#project-instruction-editor')?.value.trim() || '';
+  state.projectInstructions = {
+    ...(state.projectInstructions || {}),
+    [project.id]: instruction,
+  };
+  state.projectInstructionModalOpen = false;
+  saveState();
+  render();
+}
+
+async function importProjectFiles(fileList) {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  const incoming = [...(fileList || [])];
+  if (!incoming.length) return;
+  const current = projectFiles(project.id);
+  const incomingNames = new Set(incoming.map((file) => file.name.toLowerCase()));
+  const retained = current.filter((file) => !incomingNames.has(file.name.toLowerCase()));
+  if (retained.length + incoming.length > MAX_PROJECT_FILES) {
+    setState({ projectFileError: `Maksimal ${MAX_PROJECT_FILES} file per project.` }, false);
+    return;
+  }
+
+  const invalid = incoming.find((file) => (
+    !PROJECT_FILE_EXTENSIONS.has(projectFileExtension(file.name))
+    || file.size > MAX_PROJECT_FILE_BYTES
+  ));
+  if (invalid) {
+    const reason = invalid.size > MAX_PROJECT_FILE_BYTES
+      ? `lebih besar dari ${formatFileSize(MAX_PROJECT_FILE_BYTES)}`
+      : 'bukan file teks yang didukung';
+    setState({ projectFileError: `${invalid.name} ${reason}.` }, false);
+    return;
+  }
+  const totalBytes = retained.reduce((total, file) => total + Number(file.size || file.content?.length || 0), 0)
+    + incoming.reduce((total, file) => total + file.size, 0);
+  if (totalBytes > MAX_PROJECT_TOTAL_BYTES) {
+    setState({ projectFileError: `Total file context maksimal ${formatFileSize(MAX_PROJECT_TOTAL_BYTES)} per project.` }, false);
+    return;
+  }
+
+  try {
+    const previousProjectFiles = state.projectFiles;
+    const imported = await Promise.all(incoming.map(async (file) => ({
+      id: crypto.randomUUID(),
+      name: file.name,
+      type: file.type || 'text/plain',
+      size: file.size,
+      content: await file.text(),
+      included: true,
+      addedAt: new Date().toISOString(),
+    })));
+    state.projectFiles = {
+      ...(state.projectFiles || {}),
+      [project.id]: [
+        ...retained,
+        ...imported,
+      ],
+    };
+    state.projectFileError = '';
+    try {
+      saveState();
+    } catch {
+      state.projectFiles = previousProjectFiles;
+      throw new Error('Browser storage penuh.');
+    }
+    render();
+  } catch (error) {
+    setState({ projectFileError: error.message || 'File tidak dapat dibaca.' }, false);
+  }
+}
+
+function toggleProjectFileContext(fileId) {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  state.projectFiles = {
+    ...(state.projectFiles || {}),
+    [project.id]: projectFiles(project.id).map((file) => (
+      file.id === fileId ? { ...file, included: file.included === false } : file
+    )),
+  };
+  saveState();
+  render();
+}
+
+function removeProjectFile(fileId) {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  state.projectFiles = {
+    ...(state.projectFiles || {}),
+    [project.id]: projectFiles(project.id).filter((file) => file.id !== fileId),
+  };
+  state.projectFileError = '';
+  saveState();
+  render();
 }
 
 
@@ -1184,7 +1437,6 @@ function renderMemoryDocument(memory) {
 function activeNav() {
   if (state.view === 'projects' || state.view === 'project') return 'projects';
   if (state.view === 'customize') return 'customize';
-  if (state.view === 'artifacts') return 'artifacts';
   return 'chat';
 }
 
@@ -1223,7 +1475,6 @@ function renderSidebar() {
       <div class="sidebar-primary">
         <button class="new-chat-button" data-action="new-chat">${phIcon('plus')}<span>New chat</span></button>
         <button class="sidebar-link ${nav === 'projects' ? 'active' : ''}" data-action="show-projects">${phIcon('folder-simple')}<span>Projects</span></button>
-        <button class="sidebar-link ${nav === 'artifacts' ? 'active' : ''}" data-action="show-artifacts">${phIcon('stack')}<span>Artifacts</span></button>
         <button class="sidebar-link ${nav === 'customize' ? 'active' : ''}" data-action="show-customize">${phIcon('sliders-horizontal')}<span>Customize</span></button>
       </div>
       <div class="recent-section" id="recent-list">
@@ -1256,6 +1507,7 @@ function renderMessages() {
     <article class="message ${escapeHtml(message.role)}">
       <div class="message-avatar">${message.role === 'assistant' ? '<img class="claude-mark message-mark" src="/src/assets/claude-spark-clay.svg" alt="" />' : 'N'}</div>
       <div class="message-body">
+        ${message.triggerCommands?.length ? `<div class="message-trigger-list">${message.triggerCommands.map((command) => `<span>/${escapeHtml(command.command)}</span>`).join('')}</div>` : ''}
         <p>${escapeHtml(message.text)}</p>
         ${message.usage ? `<small class="usage">${escapeHtml(message.model || state.model)} · input ${message.usage.input_tokens ?? 0} · output ${message.usage.output_tokens ?? 0}</small>` : ''}
         ${renderActions(message)}
@@ -1265,10 +1517,23 @@ function renderMessages() {
   `).join('');
 }
 
+function renderPromptCommandChips() {
+  return (state.promptCommands || []).map((command) => `
+    <button class="prompt-command-chip" data-remove-prompt-command="${escapeHtml(command.key)}" aria-label="Remove ${escapeHtml(command.label)}">
+      <span>/${escapeHtml(command.command)}</span>
+      <small>${command.kind === 'skill' ? 'Skill' : 'Tool'}</small>
+      ${phIcon('x')}
+    </button>
+  `).join('');
+}
+
 function renderComposer({ project = false } = {}) {
+  const hasCommands = Boolean(state.promptCommands?.length);
   return `
-    <div class="composer ${project ? 'project-composer' : ''}">
-      <textarea id="prompt-input" placeholder="${project ? 'Type / for skills' : 'How can I help you today?'}" ${state.isSending ? 'disabled' : ''}></textarea>
+    <div class="composer ${project ? 'project-composer' : ''} ${hasCommands ? 'has-prompt-commands' : ''}">
+      <div class="slash-command-menu" id="slash-command-menu" role="listbox" aria-label="Skill and tool commands" hidden></div>
+      ${hasCommands ? `<div class="prompt-command-chips">${renderPromptCommandChips()}</div>` : ''}
+      <textarea id="prompt-input" placeholder="${project ? 'Type / for skills and tools' : 'How can I help you today? Type / for commands'}" ${state.isSending ? 'disabled' : ''}>${escapeHtml(state.promptDraft || '')}</textarea>
       <div class="composer-controls">
         <button class="icon-button" data-quick="Lampirkan konteks berikut:" aria-label="Add">${phIcon('plus')}</button>
         <div class="composer-options">
@@ -1383,11 +1648,22 @@ function renderProjectDetailView() {
         </button>
       `).join('')
     : '<p class="empty-copy">Belum ada chat di proyek ini.</p>';
-  const files = state.artifacts.slice(0, 4).map((artifact) => `
-    <button class="project-file" data-artifact="${artifact.id}">
-      <strong>${escapeHtml(artifact.name)}</strong>
-      <span><small>${artifact.content.split('\n').length} lines</small><b>${escapeHtml(artifact.name.split('.').pop()?.toUpperCase() || 'FILE')}</b></span>
-    </button>
+  const instruction = projectInstruction(project);
+  const files = projectFiles(project.id).map((file) => `
+    <article class="project-file ${file.included === false ? '' : 'in-context'}">
+      <div class="project-file-heading">
+        <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
+        <button data-project-file-delete="${file.id}" aria-label="Delete ${escapeHtml(file.name)}">${phIcon('trash')}</button>
+      </div>
+      <div class="project-file-meta">
+        <small>${file.content.split('\n').length} lines · ${formatFileSize(file.size)}</small>
+        <b>${escapeHtml(projectFileExtension(file.name).toUpperCase() || 'FILE')}</b>
+      </div>
+      <button class="project-file-context-toggle" data-project-file-toggle="${file.id}" aria-pressed="${file.included !== false}">
+        ${phIcon(file.included === false ? 'circle' : 'check-circle')}
+        <span>${file.included === false ? 'Add to context' : 'In context'}</span>
+      </button>
+    </article>
   `).join('');
   return `
     <main class="project-detail-view">
@@ -1404,12 +1680,14 @@ function renderProjectDetailView() {
         <aside class="project-context-column">
           ${renderProjectMemoryPanel(combineProjectMemory(project))}
           <section class="context-card">
-            <div class="context-card-heading"><h2>Instructions</h2><button class="icon-button" aria-label="Project instructions">${icon('add')}</button></div>
-            <p class="italic">${escapeHtml(project.systemPrompt || 'Add instructions to tailor Claude’s responses')}</p>
+            <div class="context-card-heading"><h2>Instructions</h2><button class="icon-button" data-action="open-project-instructions" aria-label="Edit project instructions">${icon('add')}</button></div>
+            <p class="italic">${escapeHtml(instruction || 'Add instructions to tailor Claude’s responses')}</p>
           </section>
           <section class="context-card files-context">
-            <div class="context-card-heading"><h2>Files</h2><button class="icon-button" data-action="show-artifacts">${icon('add')}</button></div>
+            <div class="context-card-heading"><h2>Files</h2><button class="icon-button" data-action="upload-project-files" aria-label="Upload project files">${icon('add')}</button></div>
+            ${state.projectFileError ? `<div class="project-file-error">${phIcon('warning-circle')}<span>${escapeHtml(state.projectFileError)}</span></div>` : ''}
             <div class="project-files">${files || '<p class="empty-copy">No files yet.</p>'}</div>
+            <input class="project-file-upload-input" type="file" multiple accept=".md,.txt,.json,.csv,.js,.jsx,.ts,.tsx,.html,.css,.xml,.yaml,.yml,text/*,application/json" aria-label="Upload project context files" />
           </section>
         </aside>
       </div>
@@ -1667,6 +1945,33 @@ function renderSkillModal() {
   `;
 }
 
+function renderProjectInstructionModal() {
+  if (!state.projectInstructionModalOpen) return '';
+  const project = projectById(state.activeProject);
+  if (!project) return '';
+  return `
+    <div class="project-instruction-backdrop">
+      <section class="project-instruction-modal" role="dialog" aria-modal="true" aria-label="Project instructions">
+        <header>
+          <div>
+            <h2>Project instructions</h2>
+            <p>Instruksi ini selalu diterapkan pada chat di project ${escapeHtml(project.name)}.</p>
+          </div>
+          <button data-action="close-project-instructions" aria-label="Close project instructions">${phIcon('x')}</button>
+        </header>
+        <label>
+          <span>Instructions</span>
+          <textarea id="project-instruction-editor" placeholder="Contoh: Gunakan Bahasa Indonesia, fokus pada edtech B2B, target sekolah dan bootcamp.">${escapeHtml(projectInstruction(project))}</textarea>
+        </label>
+        <footer>
+          <button data-action="close-project-instructions">Cancel</button>
+          <button class="primary-dark" data-action="save-project-instructions">Save</button>
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
 function renderArtifactsView() {
   const activeArtifact = state.artifacts.find((artifact) => artifact.id === state.activeArtifact) || state.artifacts[0];
   const rows = state.artifacts.map((artifact) => `
@@ -1815,13 +2120,17 @@ function focusPrompt(prefix = '') {
   }
   const nextInput = document.querySelector('#prompt-input');
   nextInput?.focus();
-  if (prefix && nextInput) nextInput.value = `${prefix} ${nextInput.value}`.trim();
+  if (prefix && nextInput) {
+    nextInput.value = `${prefix} ${nextInput.value}`.trim();
+    state.promptDraft = nextInput.value;
+  }
 }
 
 function openProjectDetail(projectId) {
   state.activeProject = projectId;
   state.view = 'project';
   state.projectMemoryEditing = false;
+  state.projectFileError = '';
   saveState();
   render();
 }
@@ -1846,16 +2155,117 @@ function createProjectConversation(projectId) {
 
 function sendMessageFromCurrentView() {
   const input = document.querySelector('#prompt-input');
-  const prompt = input?.value.trim() || '';
+  const prompt = input?.value.trim() || state.promptDraft.trim() || '';
   if (!prompt) return;
+  state.promptDraft = prompt;
   if (state.view === 'project' && currentConversation()?.projectId !== state.activeProject) {
     createProjectConversation(state.activeProject);
     saveState();
     render();
-    const nextInput = document.querySelector('#prompt-input');
-    if (nextInput) nextInput.value = prompt;
   }
   addMessage();
+}
+
+let slashMenuState = { open: false, options: [], activeIndex: 0, range: null };
+
+function closeSlashCommandMenu() {
+  const menu = document.querySelector('#slash-command-menu');
+  if (menu) menu.hidden = true;
+  slashMenuState = { open: false, options: [], activeIndex: 0, range: null };
+}
+
+function slashCommandContext(input) {
+  const cursor = input.selectionStart ?? input.value.length;
+  const beforeCursor = input.value.slice(0, cursor);
+  const match = beforeCursor.match(/(?:^|\s)\/([a-z0-9-]*)$/i);
+  if (!match) return null;
+  return {
+    query: match[1].toLowerCase(),
+    start: cursor - match[1].length - 1,
+    end: cursor,
+  };
+}
+
+function renderSlashCommandMenu() {
+  const menu = document.querySelector('#slash-command-menu');
+  if (!menu || !slashMenuState.open) return;
+  const groups = [
+    { kind: 'skill', label: 'Skills', icon: 'books' },
+    { kind: 'tool', label: 'Atlassian tools', icon: 'plugs-connected' },
+  ];
+  menu.innerHTML = groups.map((group) => {
+    const options = slashMenuState.options.filter((option) => option.kind === group.kind);
+    if (!options.length) return '';
+    return `
+      <section class="slash-command-group">
+        <p>${escapeHtml(group.label)}</p>
+        ${options.map((option) => {
+          const index = slashMenuState.options.indexOf(option);
+          return `
+            <button class="slash-command-option ${index === slashMenuState.activeIndex ? 'active' : ''}" data-prompt-command="${escapeHtml(option.key)}" role="option" aria-selected="${index === slashMenuState.activeIndex}">
+              <span class="slash-command-icon">${phIcon(group.icon)}</span>
+              <span class="slash-command-copy">
+                <strong>/${escapeHtml(option.command)} <em>${escapeHtml(option.label)}</em></strong>
+                <small>${escapeHtml(option.description)}</small>
+              </span>
+            </button>
+          `;
+        }).join('')}
+      </section>
+    `;
+  }).join('');
+  menu.hidden = false;
+}
+
+function updateSlashCommandMenu(input, resetIndex = true) {
+  const context = slashCommandContext(input);
+  if (!context) {
+    closeSlashCommandMenu();
+    return;
+  }
+  const options = promptCommandOptions().filter((option) => {
+    const haystack = `${option.command} ${option.label} ${option.description}`.toLowerCase();
+    return !context.query || haystack.includes(context.query);
+  });
+  if (!options.length) {
+    closeSlashCommandMenu();
+    return;
+  }
+  slashMenuState = {
+    open: true,
+    options,
+    activeIndex: resetIndex ? 0 : Math.min(slashMenuState.activeIndex, options.length - 1),
+    range: context,
+  };
+  renderSlashCommandMenu();
+}
+
+function selectPromptCommand(key) {
+  const option = promptCommandOptions().find((command) => command.key === key);
+  const input = document.querySelector('#prompt-input');
+  if (!option || !input) return;
+  const context = slashMenuState.range || slashCommandContext(input);
+  const nextDraft = context
+    ? `${input.value.slice(0, context.start)}${input.value.slice(context.end)}`.replace(/[ \t]{2,}/g, ' ')
+    : input.value;
+  const cursor = context?.start ?? nextDraft.length;
+  state.promptDraft = nextDraft;
+  if (!(state.promptCommands || []).some((command) => command.key === option.key)) {
+    state.promptCommands = [...(state.promptCommands || []), option];
+  }
+  closeSlashCommandMenu();
+  render();
+  const nextInput = document.querySelector('#prompt-input');
+  nextInput?.focus();
+  nextInput?.setSelectionRange(cursor, cursor);
+}
+
+function removePromptCommand(key) {
+  state.promptCommands = (state.promptCommands || []).filter((command) => command.key !== key);
+  render();
+  const input = document.querySelector('#prompt-input');
+  input?.focus();
+  input?.setSelectionRange(input.value.length, input.value.length);
 }
 
 function createNewProject() {
@@ -1872,6 +2282,12 @@ function createNewProject() {
 }
 
 function handleClick(event) {
+  const promptCommandButton = event.target.closest('[data-prompt-command]');
+  const removePromptCommandButton = event.target.closest('[data-remove-prompt-command]');
+  if (promptCommandButton) return selectPromptCommand(promptCommandButton.dataset.promptCommand);
+  if (removePromptCommandButton) return removePromptCommand(removePromptCommandButton.dataset.removePromptCommand);
+  if (!event.target.closest('.composer')) closeSlashCommandMenu();
+
   const activeCreateMenu = event.target.closest('.skill-create-disclosure');
   document.querySelectorAll('.skill-create-disclosure[open]').forEach((menu) => {
     if (menu !== activeCreateMenu) menu.removeAttribute('open');
@@ -1891,7 +2307,11 @@ function handleClick(event) {
   const skillSelectButton = event.target.closest('[data-skill-select]');
   const settingsSectionButton = event.target.closest('[data-settings-section]');
   const branchMessageButton = event.target.closest('[data-branch-message]');
+  const projectFileToggleButton = event.target.closest('[data-project-file-toggle]');
+  const projectFileDeleteButton = event.target.closest('[data-project-file-delete]');
 
+  if (projectFileDeleteButton) return removeProjectFile(projectFileDeleteButton.dataset.projectFileDelete);
+  if (projectFileToggleButton) return toggleProjectFileContext(projectFileToggleButton.dataset.projectFileToggle);
   if (branchMessageButton) return branchConversation(branchMessageButton.dataset.branchMessage);
   if (conversationButton) {
     const activeConversation = Number(conversationButton.dataset.conversation);
@@ -1923,6 +2343,10 @@ function handleClick(event) {
   if (action === 'show-settings') setState({ settingsOpen: true, settingsSection: 'general' });
   if (action === 'close-settings') setState({ settingsOpen: false });
   if (action === 'open-project-memory') openMemoryModal('project');
+  if (action === 'open-project-instructions') openProjectInstructionModal();
+  if (action === 'close-project-instructions') closeProjectInstructionModal();
+  if (action === 'save-project-instructions') saveProjectInstruction();
+  if (action === 'upload-project-files') document.querySelector('.project-file-upload-input')?.click();
   if (action === 'open-global-memory') openMemoryModal('global');
   if (action === 'close-memory-modal') closeMemoryModal();
   if (action === 'edit-memory-modal') startMemoryModalEditing();
@@ -1953,6 +2377,11 @@ function handleClick(event) {
 }
 
 function handleChange(event) {
+  if (event.target.matches('.project-file-upload-input')) {
+    importProjectFiles(event.target.files);
+    event.target.value = '';
+    return;
+  }
   if (event.target.matches('.skill-upload-input')) {
     const [file] = event.target.files || [];
     importSkillFile(file);
@@ -1978,6 +2407,10 @@ function handleChange(event) {
 }
 
 function handleInput(event) {
+  if (event.target.id === 'prompt-input') {
+    state.promptDraft = event.target.value;
+    updateSlashCommandMenu(event.target);
+  }
   if (event.target.closest('.skill-modal-fields')) updateSkillModalSubmitState();
   if (event.target.id === 'api-key-input') {
     state.apiKey = event.target.value.trim();
@@ -1992,11 +2425,38 @@ function handleInput(event) {
 }
 
 function handleKeydown(event) {
-  if (event.target.id === 'prompt-input' && event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault();
-    sendMessageFromCurrentView();
+  if (event.target.id === 'prompt-input') {
+    if (slashMenuState.open && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      slashMenuState.activeIndex = (slashMenuState.activeIndex + direction + slashMenuState.options.length) % slashMenuState.options.length;
+      renderSlashCommandMenu();
+      return;
+    }
+    if (slashMenuState.open && ['Enter', 'Tab'].includes(event.key)) {
+      event.preventDefault();
+      selectPromptCommand(slashMenuState.options[slashMenuState.activeIndex]?.key);
+      return;
+    }
+    if (slashMenuState.open && event.key === 'Escape') {
+      event.preventDefault();
+      closeSlashCommandMenu();
+      return;
+    }
+    if (event.key === 'Backspace' && !event.target.value && state.promptCommands?.length) {
+      event.preventDefault();
+      removePromptCommand(state.promptCommands.at(-1).key);
+      return;
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendMessageFromCurrentView();
+      return;
+    }
   }
-  if (event.key === 'Escape' && state.skillModalMode) {
+  if (event.key === 'Escape' && state.projectInstructionModalOpen) {
+    closeProjectInstructionModal();
+  } else if (event.key === 'Escape' && state.skillModalMode) {
     closeSkillModal();
   } else if (event.key === 'Escape' && document.querySelector('.skill-create-disclosure[open], .skill-actions-disclosure[open]')) {
     document.querySelectorAll('.skill-create-disclosure[open]').forEach((menu) => menu.removeAttribute('open'));
@@ -2031,6 +2491,7 @@ function render() {
       ${renderSettingsModal()}
       ${renderMemoryModal()}
       ${renderSkillModal()}
+      ${renderProjectInstructionModal()}
     </div>
   `;
   document.querySelector('#messages')?.scrollTo({ top: 999999 });

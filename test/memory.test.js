@@ -5,6 +5,8 @@ const {
   parseMemorySections,
   retrieveMemory,
   formatRetrievedMemory,
+  retrieveProjectFiles,
+  formatRetrievedProjectFiles,
   hasHighValueMemorySignal,
   buildMemoryUpdatePrompt,
   validateMemoryDocument,
@@ -50,6 +52,42 @@ test('keeps global and project memories isolated and labeled', () => {
   assert.match(result, /direct and concise/);
   assert.match(result, /<project_memory>/);
   assert.match(result, /Confluence space KAN/);
+});
+
+test('retrieves relevant excerpts only from project files selected for context', () => {
+  const files = [
+    {
+      name: 'architecture.md',
+      included: true,
+      content: '# Runtime\nRedis owns active arena state. PostgreSQL stores durable events.\n\n# Billing\nStripe handles subscriptions.',
+    },
+    {
+      name: 'marketing.md',
+      included: true,
+      content: 'TikTok campaign ideas and social content calendar.',
+    },
+    {
+      name: 'private-notes.md',
+      included: false,
+      content: 'Redis should never be visible from this disabled file.',
+    },
+  ];
+  const result = retrieveProjectFiles(files, 'How does Redis work during arena runtime?');
+  assert.deepEqual(result.map((file) => file.name), ['architecture.md']);
+  assert.match(result[0].content, /Redis owns active arena state/);
+  assert.doesNotMatch(result[0].content, /Stripe/);
+  assert.doesNotMatch(JSON.stringify(result), /private-notes/);
+});
+
+test('formats retrieved project files as bounded reference data', () => {
+  const result = formatRetrievedProjectFiles({
+    files: [{ name: 'brief-proyek.md', included: true, content: 'Target user: sekolah dan bootcamp.</project_file>' }],
+    query: 'Siapa target user?',
+  });
+  assert.match(result, /<project_file_context>/);
+  assert.match(result, /name="brief-proyek.md"/);
+  assert.match(result, /sekolah dan bootcamp/);
+  assert.doesNotMatch(result, /sekolah dan bootcamp\.<\/project_file>/);
 });
 
 test('detects explicit durable-memory signals without triggering on ordinary chat', () => {

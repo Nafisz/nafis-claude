@@ -22,6 +22,18 @@ test('skills are injected only when active and triggered; empty keywords means a
   assert.doesNotMatch(formatTriggeredSkills(skills, 'jira'), /Never apply/);
 });
 
+test('explicit skill selection triggers an active skill without matching keywords and avoids duplicates', () => {
+  assert.deepEqual(
+    selectTriggeredSkills(skills, 'Write a plain summary', ['jira']).map((skill) => skill.id),
+    ['always', 'jira'],
+  );
+  assert.deepEqual(
+    selectTriggeredSkills(skills, 'Inspect Jira', ['jira']).map((skill) => skill.id),
+    ['always', 'jira'],
+  );
+  assert.doesNotMatch(formatTriggeredSkills(skills, 'summary', ['off']), /Never apply/);
+});
+
 test('mutation authorization requires explicit write intent and matching Atlassian product', () => {
   assert.equal(isMutationAuthorized('atlassian_jira_update_issue', 'Show Jira KAN-1'), false);
   assert.equal(isMutationAuthorized('atlassian_jira_update_issue', 'Update Jira issue KAN-1 summary'), true);
