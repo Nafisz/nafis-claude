@@ -492,11 +492,13 @@ function allProjects() {
 }
 
 function currentConversation() {
-  return state.conversations.find((conversation) => conversation.id === state.activeConversation) ?? state.conversations[0];
+  if (state.activeConversation === null || state.activeConversation === undefined) return null;
+  return state.conversations.find((conversation) => conversation.id === state.activeConversation) ?? null;
 }
 
-function currentMessages() {
-  return state.messagesByConversation[state.activeConversation] ?? [];
+function currentMessages(conversationId = state.activeConversation) {
+  if (conversationId === null || conversationId === undefined) return [];
+  return state.messagesByConversation[conversationId] ?? [];
 }
 
 function conversationById(id) {
@@ -528,6 +530,7 @@ function selectedProjectFileIds(projectId) {
 }
 
 function conversationFiles(conversationId = state.activeConversation) {
+  if (conversationId === null || conversationId === undefined) return [];
   return state.conversationFiles?.[conversationId] || [];
 }
 
@@ -660,7 +663,12 @@ function setState(patch, persist = true) {
 }
 
 function titleFromPrompt(prompt) {
-  return prompt.length > 44 ? `${prompt.slice(0, 44)}...` : prompt || 'Untitled';
+  const normalized = String(prompt || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Untitled';
+  if (normalized.length <= 52) return normalized;
+  const candidate = normalized.slice(0, 52).trim();
+  const wordBoundary = candidate.lastIndexOf(' ');
+  return `${(wordBoundary > 24 ? candidate.slice(0, wordBoundary) : candidate).trim()}...`;
 }
 
 function updateConversationPreview(prompt) {
@@ -1104,6 +1112,7 @@ async function addMessage() {
   if (!prompt || state.isSending) return;
 
   const conversationId = state.activeConversation;
+  if (conversationId === null || conversationId === undefined) return;
   const triggers = selectedPromptTriggers();
   const userMessage = {
     id: crypto.randomUUID(),
@@ -1156,25 +1165,55 @@ async function addMessage() {
 }
 
 
-function newConversation() {
-  const id = Date.now();
-  state.conversations = [{ id, title: 'Untitled', projectId: null, model: currentModelId(), preview: 'New session', updated: 'Just now' }, ...state.conversations];
-  state.messagesByConversation[id] = [{
-    ...welcomeMessage,
-    id: crypto.randomUUID(),
-    text: 'How can I help?',
-  }];
+function conversationWelcomeText(projectId = null) {
+  const project = projectById(projectId);
+  return project ? `${project.name} is active.` : 'How can I help?';
+}
+
+function createConversationFromPrompt(prompt = '', projectId = null) {
+  const id = nextConversationId();
+  const normalizedProjectId = projectById(projectId) ? projectId : null;
+  const preview = String(prompt || '').replace(/\s+/g, ' ').trim().slice(0, 72);
+  state.conversations = [{
+    id,
+    title: titleFromPrompt(prompt),
+    projectId: normalizedProjectId,
+    model: state.model || DEFAULT_MODEL_ID,
+    preview: preview || (normalizedProjectId ? 'New project session' : 'New session'),
+    updated: 'Just now',
+  }, ...state.conversations];
+  state.messagesByConversation = {
+    ...state.messagesByConversation,
+    [id]: [{ ...welcomeMessage, id: crypto.randomUUID(), text: conversationWelcomeText(normalizedProjectId) }],
+  };
   state.conversationFiles = { ...(state.conversationFiles || {}), [id]: [] };
+  state.sessionSummaries = { ...(state.sessionSummaries || {}), [id]: '' };
+  state.contextStats = { ...(state.contextStats || {}), [id]: { lastMemoryTurn: 0, summarizedThrough: 0 } };
+  state.memoryUpdatedAt = {
+    ...state.memoryUpdatedAt,
+    sessions: { ...(state.memoryUpdatedAt?.sessions || {}), [id]: '' },
+  };
   state.activeConversation = id;
+  state.activeProject = normalizedProjectId;
+  return id;
+}
+
+function newConversation() {
+  if (state.isSending) return;
+  state.activeConversation = null;
   state.activeProject = null;
   state.view = 'chat';
   state.settingsOpen = false;
+  state.promptDraft = '';
+  state.promptCommands = [];
+  state.conversationFileError = '';
+  state.error = '';
   saveState();
   render();
 }
 
 function branchConversation(throughMessageId = null) {
-  if (state.isSending) return;
+  if (state.isSending || !currentConversation()) return;
   const sourceConversation = currentConversation();
   const sourceMessages = currentMessages();
   const id = nextConversationId();
@@ -1212,6 +1251,7 @@ function branchConversation(throughMessageId = null) {
 }
 
 function moveConversationToProject(projectId) {
+  if (!currentConversation()) return;
   state.activeProject = projectId;
   state.conversations = state.conversations.map((conversation) => (
     conversation.id === state.activeConversation ? { ...conversation, projectId } : conversation
@@ -1304,6 +1344,7 @@ async function loadProjectFiles(projectId, shouldRender = true) {
 }
 
 async function loadConversationFiles(conversationId = state.activeConversation, shouldRender = true) {
+  if (conversationId === null || conversationId === undefined) return [];
   const files = await listStoredFiles('conversation', conversationId);
   state.conversationFiles = { ...(state.conversationFiles || {}), [conversationId]: files };
   state.conversationFileError = '';
@@ -1413,6 +1454,10 @@ async function removeSelectedProjectFiles() {
 }
 
 async function importConversationFiles(fileList) {
+  if (!currentConversation()) {
+    setState({ conversationFileError: 'Send a first message before uploading session files.' }, false);
+    return;
+  }
   const incoming = [...(fileList || [])];
   if (!incoming.length) return;
   const invalid = incoming.find((file) => !PROJECT_FILE_EXTENSIONS.has(projectFileExtension(file.name)));
@@ -1823,6 +1868,7 @@ function renderMemoryDocument(memory) {
 
 function activeNav() {
   if (state.view === 'projects' || state.view === 'project') return 'projects';
+  if (state.view === 'artifacts') return 'artifacts';
   if (state.view === 'customize') return 'customize';
   return 'chat';
 }
@@ -1838,6 +1884,7 @@ function renderWindowBar() {
         <button disabled aria-label="Forward">${phIcon('arrow-right')}</button>
       </div>
       <div class="window-tools window-controls">
+        <button aria-label="Feedback">${phIcon('ghost')}</button>
         <button disabled aria-label="Minimize">${phIcon('minus')}</button>
         <button disabled aria-label="Restore">${phIcon('app-window')}</button>
         <button disabled aria-label="Close">${phIcon('x')}</button>
@@ -1858,10 +1905,13 @@ function renderSidebar() {
     <aside class="app-sidebar ${state.sidebarCollapsed ? 'collapsed' : ''}">
       <div class="product-tabs">
         <button class="product-tab ${nav === 'chat' ? 'active' : ''}" data-action="show-chat">${phIcon('chat-circle')}<span>Chat</span></button>
+        <button class="product-tab" disabled>${phIcon('list-checks')}<span>Cowork</span></button>
+        <button class="product-tab" disabled>${phIcon('code')}<span>Code</span></button>
       </div>
       <div class="sidebar-primary">
         <button class="new-chat-button" data-action="new-chat">${phIcon('plus')}<span>New chat</span></button>
         <button class="sidebar-link ${nav === 'projects' ? 'active' : ''}" data-action="show-projects">${phIcon('folder-simple')}<span>Projects</span></button>
+        <button class="sidebar-link ${nav === 'artifacts' ? 'active' : ''}" data-action="show-artifacts">${phIcon('shapes')}<span>Artifacts</span></button>
         <button class="sidebar-link ${nav === 'customize' ? 'active' : ''}" data-action="show-customize">${phIcon('sliders-horizontal')}<span>Customize</span></button>
       </div>
       <div class="recent-section" id="recent-list">
@@ -1930,6 +1980,10 @@ function renderConversationFileChips() {
 function renderComposer({ project = false } = {}) {
   const hasCommands = Boolean(state.promptCommands?.length);
   const hasFiles = Boolean(conversationFiles().length);
+  const composerProject = project ? null : projectById(currentConversation()?.projectId);
+  const composerProjectChip = composerProject
+    ? `<span class="composer-project-chip" title="${escapeHtml(composerProject.name)}" role="img" aria-label="Project: ${escapeHtml(composerProject.name)}">${phIcon('folder-simple')}</span>`
+    : '';
   return `
     <div class="composer ${project ? 'project-composer' : ''} ${hasCommands || hasFiles ? 'has-prompt-commands' : ''}">
       <div class="slash-command-menu" id="slash-command-menu" role="listbox" aria-label="Skill and tool commands" hidden></div>
@@ -1940,6 +1994,7 @@ function renderComposer({ project = false } = {}) {
       <div class="composer-controls">
         <button class="icon-button" data-action="upload-chat-files" aria-label="Upload files">${phIcon('plus')}</button>
         <input class="chat-file-upload-input" type="file" multiple accept=".md,.txt,.json,.csv,.js,.jsx,.ts,.tsx,.html,.css,.xml,.yaml,.yml,text/*,application/json" aria-label="Upload conversation context files" />
+        ${composerProjectChip}
         <div class="composer-options">
           <select id="model-select" aria-label="Choose model">
             ${defaultModels.map((model) => `<option value="${model.id}" ${model.id === currentModelId() ? 'selected' : ''}>${escapeHtml(model.label)}</option>`).join('')}
@@ -1948,7 +2003,7 @@ function renderComposer({ project = false } = {}) {
             ${toneOptions.map((tone) => `<option ${tone === state.tone ? 'selected' : ''}>${tone}</option>`).join('')}
           </select>
           <button class="icon-button" data-quick="Transcribe my voice:" aria-label="Voice">${phIcon('microphone')}</button>
-          <button class="send-button ${project ? 'project-send' : 'chat-send'}" data-action="send-message" aria-label="Send" ${state.isSending ? 'disabled' : ''}>${state.isSending ? phIcon('stop') : project ? phIcon('paper-plane-right') : phIcon('chart-bar')}</button>
+          <button class="send-button ${project ? 'project-send' : 'chat-send'}" data-action="send-message" aria-label="${project ? 'Send' : 'Kirim'}" ${state.isSending ? 'disabled' : ''}>${state.isSending ? phIcon('stop') : project ? phIcon('paper-plane-right') : phIcon('arrow-up')}</button>
         </div>
       </div>
     </div>
@@ -2053,6 +2108,7 @@ function renderProjectDetailView() {
       `).join('')
     : '<p class="empty-copy">No chats in this project yet.</p>';
   const instruction = projectInstruction(project);
+  const projectDescription = project.memory || project.systemPrompt || 'Project workspace with dedicated memory and instructions.';
   const projectFileList = projectFiles(project.id);
   const availableFileIds = new Set(projectFileList.map((file) => file.id));
   const selectedFileIds = new Set((state.selectedProjectFileIds || []).filter((id) => availableFileIds.has(id)));
@@ -2089,7 +2145,10 @@ function renderProjectDetailView() {
       <div class="project-detail-layout">
         <section class="project-primary">
           <div class="project-title-row">
-            <h1>${escapeHtml(project.name)}</h1>
+            <div class="project-title-copy">
+              <h1>${escapeHtml(project.name)}</h1>
+              <p>${escapeHtml(projectDescription)}</p>
+            </div>
             <span><button class="icon-button">${icon('more_vert')}</button><button class="icon-button">${icon('push_pin')}</button></span>
           </div>
           ${renderComposer({ project: true })}
@@ -2589,30 +2648,25 @@ async function openConversation(conversationId) {
   }
 }
 
-function createProjectConversation(projectId) {
-  const id = nextConversationId();
-  const project = projectById(projectId);
-  state.conversations = [{
-    id,
-    title: 'Untitled',
-    projectId,
-    model: currentModelId(),
-    preview: 'New project session',
-    updated: 'Just now',
-  }, ...state.conversations];
-  state.messagesByConversation = {
-    ...state.messagesByConversation,
-    [id]: [{ ...welcomeMessage, id: crypto.randomUUID(), text: `${project?.name || 'Project'} is active.` }],
-  };
-  state.conversationFiles = { ...(state.conversationFiles || {}), [id]: [] };
-  state.activeConversation = id;
+function createProjectConversation(projectId, prompt = '') {
+  return createConversationFromPrompt(prompt, projectId);
+}
+
+function ensureConversationForPrompt(prompt) {
+  const current = currentConversation();
+  if (state.view === 'project') {
+    if (current?.projectId === state.activeProject) return current.id;
+    return createProjectConversation(state.activeProject, prompt);
+  }
+  if (current) return current.id;
+  return createConversationFromPrompt(prompt, null);
 }
 
 function openConversationFilePicker() {
-  if (state.view === 'project' && currentConversation()?.projectId !== state.activeProject) {
-    createProjectConversation(state.activeProject);
-    saveState();
-    render();
+  const current = currentConversation();
+  if (!current || (state.view === 'project' && current.projectId !== state.activeProject)) {
+    setState({ conversationFileError: 'Send a first message before uploading session files.' }, false);
+    return;
   }
   document.querySelector('.chat-file-upload-input')?.click();
 }
@@ -2620,13 +2674,9 @@ function openConversationFilePicker() {
 function sendMessageFromCurrentView() {
   const input = document.querySelector('#prompt-input');
   const prompt = input?.value.trim() || state.promptDraft.trim() || '';
-  if (!prompt) return;
+  if (!prompt || state.isSending) return;
   state.promptDraft = prompt;
-  if (state.view === 'project' && currentConversation()?.projectId !== state.activeProject) {
-    createProjectConversation(state.activeProject);
-    saveState();
-    render();
-  }
+  ensureConversationForPrompt(prompt);
   addMessage();
 }
 
@@ -3028,20 +3078,13 @@ function renderCurrentView() {
 }
 
 function render() {
-  const standaloneView = state.view === 'customize' || state.view === 'artifacts';
   app.innerHTML = `
     <div class="app-window">
-      ${standaloneView ? `
-        <div class="standalone-shell">
-          ${renderWindowBar()}
-          ${renderCurrentView()}
-        </div>
-      ` : `
-        <div class="app-body">
-          ${renderSidebar()}
-          ${renderCurrentView()}
-        </div>
-      `}
+      ${renderWindowBar()}
+      <div class="app-body">
+        ${renderSidebar()}
+        ${renderCurrentView()}
+      </div>
       ${renderSettingsModal()}
       ${renderMemoryModal()}
       ${renderSkillModal()}

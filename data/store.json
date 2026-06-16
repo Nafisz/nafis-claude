@@ -108,7 +108,7 @@
     "tone": "Medium",
     "apiKeySaved": true,
     "view": "project",
-    "settingsOpen": true,
+    "settingsOpen": false,
     "settingsSection": "general",
     "sidebarCollapsed": false,
     "profile": {
@@ -118,7 +118,7 @@
     },
     "customProjects": [],
     "activeProject": "nova",
-    "activeConversation": 1,
+    "activeConversation": 1781596258113,
     "activeArtifact": null,
     "activeSkill": "confluence",
     "skillViewMode": "preview",
@@ -129,33 +129,20 @@
     ],
     "projectMemoryEditing": false,
     "projectInstructions": {
-      "nova": "Use Bahasa Indonesia. Always prioritize the needs of schools and B2B bootcamps."
+      "nova": ""
     },
     "projectFiles": {
-      "nova": [
-        {
-          "id": "bc22daa0-e183-45e7-89e7-8991d4f939bb",
-          "name": "project-brief.md",
-          "type": "text/markdown",
-          "size": 84,
-          "lineCount": 4,
-          "scope": "project",
-          "scopeId": "nova",
-          "included": true,
-          "addedAt": "2026-06-16T01:05:13.677Z",
-          "updatedAt": "2026-06-16T01:05:13.677Z"
-        }
-      ],
+      "nova": [],
       "game": [],
       "ops": []
     },
     "projectFilesMigrated": true,
     "backendFilesMigrated": true,
     "conversationFiles": {
-      "1": []
+      "1": [],
+      "1781594904406": [],
+      "1781596258113": []
     },
-    "memoryModalScope": null,
-    "memoryModalEditing": false,
     "isSending": false,
     "isMemoryUpdating": false,
     "streamingMessageId": null,
@@ -171,6 +158,22 @@
       "sessions": {}
     },
     "conversations": [
+      {
+        "id": 1781596258113,
+        "title": "Untitled",
+        "projectId": "nova",
+        "model": "claude-sonnet-4-6",
+        "preview": "New project session",
+        "updated": "Just now"
+      },
+      {
+        "id": 1781594904406,
+        "title": "Untitled",
+        "projectId": null,
+        "model": "claude-sonnet-4-6",
+        "preview": "New session",
+        "updated": "Just now"
+      },
       {
         "id": 1,
         "title": "Untitled",
@@ -235,6 +238,22 @@
           "role": "assistant",
           "text": "NovaX is active. I will keep the B2B edtech context in mind when answering.",
           "createdAt": "2026-06-11T13:31:19.451Z"
+        }
+      ],
+      "1781594904406": [
+        {
+          "id": "66a31c00-b7d5-4b9b-bec8-a03b0d57690d",
+          "role": "assistant",
+          "text": "How can I help?",
+          "createdAt": "2026-06-16T07:27:52.422Z"
+        }
+      ],
+      "1781596258113": [
+        {
+          "id": "60ced71a-13ab-4631-8dff-8cfdc9f39985",
+          "role": "assistant",
+          "text": "NovaX Edtech is active.",
+          "createdAt": "2026-06-16T07:50:48.532Z"
         }
       ]
     },
@@ -320,6 +339,6 @@
       "haiku": []
     }
   },
-  "appStateUpdatedAt": "2026-06-16T01:59:08.807Z",
-  "updatedAt": "2026-06-16T01:59:08.807Z"
+  "appStateUpdatedAt": "2026-06-16T08:24:54.525Z",
+  "updatedAt": "2026-06-16T08:24:54.525Z"
 }
