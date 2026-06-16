@@ -6,8 +6,10 @@ const SESSION_SUMMARY_TRIGGER = 14;
 const MEMORY_UPDATE_TURN_INTERVAL = 6;
 const PROJECT_FILE_EXTENSIONS = new Set(['md', 'txt', 'json', 'csv', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'xml', 'yaml', 'yml']);
 
-const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
-const MEMORY_MODEL_ID = 'claude-haiku-4-5-20251001';
+const SONNET_MODEL_ID = 'ag/claude-sonnet-4-6';
+const OPUS_MODEL_ID = 'ag/claude-opus-4-6-thinking';
+const DEFAULT_MODEL_ID = SONNET_MODEL_ID;
+const MEMORY_MODEL_ID = SONNET_MODEL_ID;
 const MEMORY_SECTION_TITLES = [
   'Work context',
   'Personal context',
@@ -25,17 +27,13 @@ const MEMORY_SECTION_TITLES = [
 ];
 
 const defaultModels = [
-  { id: 'claude-opus-4-8', label: 'Opus 4.8', tier: 'max', detail: 'Maximum reasoning.' },
-  { id: 'claude-opus-4-7', label: 'Opus 4.7', tier: 'max', detail: 'Deep reasoning.' },
-  { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'max', detail: 'Deepest reasoning.' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'default', detail: 'Default for daily work and architecture.' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'fast', detail: 'Fast and cost efficient.' },
+  { id: SONNET_MODEL_ID, label: 'Sonnet 4.6', tier: 'default', detail: 'Default model for daily work and architecture.' },
+  { id: OPUS_MODEL_ID, label: 'Opus 4.6 Thinking', tier: 'max', detail: 'Deep reasoning model.' },
 ];
 
 const modelKeyFamilies = [
-  { id: 'opus', label: 'Opus', pattern: /opus/i, detail: 'Used by all Opus models.' },
-  { id: 'sonnet', label: 'Sonnet', pattern: /sonnet/i, detail: 'Used by all Sonnet models.' },
-  { id: 'haiku', label: 'Haiku', pattern: /haiku/i, detail: 'Used by all Haiku models and memory.' },
+  { id: 'sonnet', label: 'Sonnet', pattern: /sonnet|haiku/i, detail: 'Used by Sonnet chat and memory.' },
+  { id: 'opus', label: 'Opus', pattern: /opus/i, detail: 'Used by Opus Thinking sessions.' },
 ];
 
 const toneOptions = ['Low', 'Medium', 'High'];
@@ -54,6 +52,13 @@ function splitApiKeys(value) {
     .filter(Boolean);
 }
 
+function normalizeModelId(modelId = DEFAULT_MODEL_ID) {
+  const value = String(modelId || DEFAULT_MODEL_ID).trim();
+  if (value === OPUS_MODEL_ID || /opus/i.test(value)) return OPUS_MODEL_ID;
+  if (value === SONNET_MODEL_ID || /sonnet|haiku/i.test(value)) return SONNET_MODEL_ID;
+  return DEFAULT_MODEL_ID;
+}
+
 function compactApiKeysByModel(source = {}) {
   return Object.fromEntries(modelKeyFamilies.map((family) => [
     family.id,
@@ -66,7 +71,19 @@ function emptyApiKeysByModel() {
 }
 
 function normalizeStoredApiKeys(source = {}, legacyKey = '') {
-  const compact = compactApiKeysByModel(source);
+  const normalizedSource = {
+    ...source,
+    sonnet: [
+      ...splitApiKeys(source.sonnet),
+      ...splitApiKeys(source[SONNET_MODEL_ID]),
+      ...splitApiKeys(source.haiku),
+    ],
+    opus: [
+      ...splitApiKeys(source.opus),
+      ...splitApiKeys(source[OPUS_MODEL_ID]),
+    ],
+  };
+  const compact = compactApiKeysByModel(normalizedSource);
   const legacyKeys = splitApiKeys(legacyKey);
   const hasFamilyKeys = Object.values(compact).some((keys) => keys.length);
   return Object.fromEntries(modelKeyFamilies.map((family) => [
@@ -76,7 +93,7 @@ function normalizeStoredApiKeys(source = {}, legacyKey = '') {
 }
 
 function modelKeyFamilyForModel(modelId = DEFAULT_MODEL_ID) {
-  return modelKeyFamilies.find((family) => family.pattern.test(String(modelId || '')))?.id || 'sonnet';
+  return modelKeyFamilies.find((family) => family.pattern.test(normalizeModelId(modelId)))?.id || 'sonnet';
 }
 
 const defaultSkills = [
@@ -181,6 +198,10 @@ const initialState = {
   settingsOpen: false,
   settingsSection: 'general',
   sidebarCollapsed: false,
+  conversationMenuId: null,
+  conversationRenameId: null,
+  conversationRenameDraft: '',
+  conversationDeleteConfirmId: null,
   profile: { fullName: 'nafis', callName: 'nafis', work: '' },
   customProjects: [],
   activeProject: null,
@@ -254,12 +275,12 @@ const app = document.querySelector('#app');
 function normalizePersistedState(stored = {}) {
   const conversations = (stored.conversations || initialState.conversations).map((conversation) => ({
     ...conversation,
-    model: defaultModels.some((model) => model.id === conversation.model) ? conversation.model : DEFAULT_MODEL_ID,
+    model: normalizeModelId(conversation.model),
   }));
   return {
       ...structuredClone(initialState),
       ...stored,
-      model: defaultModels.some((model) => model.id === stored.model) ? stored.model : DEFAULT_MODEL_ID,
+      model: normalizeModelId(stored.model),
       conversations,
       apiKey: stored.apiKey || '',
       apiKeysByModel: normalizeStoredApiKeys(stored.apiKeysByModel, stored.apiKey || ''),
@@ -284,6 +305,10 @@ function normalizePersistedState(stored = {}) {
       settingsOpen: false,
       settingsSection: 'general',
       sidebarCollapsed: Boolean(stored.sidebarCollapsed),
+      conversationMenuId: null,
+      conversationRenameId: null,
+      conversationRenameDraft: '',
+      conversationDeleteConfirmId: null,
       profile: { ...initialState.profile, ...(stored.profile || {}) },
       customProjects: stored.customProjects || [],
       skillModalMode: null,
@@ -373,8 +398,8 @@ function apiKeysForModelId(modelId = currentModelId()) {
   return apiKeysForFamily(modelKeyFamilyForModel(modelId));
 }
 
-function hasApiKeysForModel(modelId = currentModelId()) {
-  return apiKeysForModelId(modelId).length > 0;
+function hasApiKeysForModel(_modelId = currentModelId()) {
+  return true;
 }
 
 function apiKeysForRequest(_modelId = currentModelId()) {
@@ -404,6 +429,10 @@ function buildPersistedState() {
     memoryModalEditing,
     memoryEditDraft,
     memoryModalError,
+    conversationMenuId,
+    conversationRenameId,
+    conversationRenameDraft,
+    conversationDeleteConfirmId,
     ...persistableState
   } = state;
   const persisted = {
@@ -476,11 +505,12 @@ function escapeHtml(value = '') {
 }
 
 function modelById(id) {
-  return defaultModels.find((model) => model.id === id) ?? defaultModels.find((model) => model.id === DEFAULT_MODEL_ID) ?? defaultModels[0];
+  const normalized = normalizeModelId(id);
+  return defaultModels.find((model) => model.id === normalized) ?? defaultModels.find((model) => model.id === DEFAULT_MODEL_ID) ?? defaultModels[0];
 }
 
 function currentModelId() {
-  return currentConversation()?.model || state.model || DEFAULT_MODEL_ID;
+  return normalizeModelId(currentConversation()?.model || state.model || DEFAULT_MODEL_ID);
 }
 
 function projectById(id) {
@@ -922,9 +952,9 @@ function createLocalFallback(prompt) {
   const family = modelKeyFamilies.find((item) => item.id === modelKeyFamilyForModel(currentModelId()));
   const modelLabel = family?.label || modelById(currentModelId()).label;
   const text = [
-    `Local mode is active because the ${modelLabel} API key is unavailable or every ${modelLabel} key failed.`,
+    `Local fallback is active because the ${modelLabel} request did not complete through the OpenAI-compatible endpoint.`,
     memory ? `Project memory in use: ${memory.name} - ${memory.memory}` : '',
-    'Add the model API key in Settings so answers come from the `/api/chat-stream` backend proxy and use the selected model.',
+    'Check that the local AI server is running at `http://localhost:20128/v1`; add a model API key in Settings only if that endpoint requires bearer auth.',
   ].filter(Boolean).join('\n\n');
   return { text, actions };
 }
@@ -1207,6 +1237,10 @@ function newConversation() {
   state.promptDraft = '';
   state.promptCommands = [];
   state.conversationFileError = '';
+  state.conversationMenuId = null;
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationDeleteConfirmId = null;
   state.error = '';
   saveState();
   render();
@@ -1250,13 +1284,118 @@ function branchConversation(throughMessageId = null) {
   render();
 }
 
-function moveConversationToProject(projectId) {
-  if (!currentConversation()) return;
-  state.activeProject = projectId;
-  state.conversations = state.conversations.map((conversation) => (
-    conversation.id === state.activeConversation ? { ...conversation, projectId } : conversation
+function removeRecordKey(record = {}, key) {
+  const next = { ...(record || {}) };
+  delete next[key];
+  return next;
+}
+
+function startConversationRename(conversationId) {
+  const conversation = conversationById(conversationId);
+  if (!conversation) return;
+  state.conversationMenuId = conversationId;
+  state.conversationRenameId = conversationId;
+  state.conversationRenameDraft = conversation.title;
+  state.conversationDeleteConfirmId = null;
+  render();
+  setTimeout(() => {
+    const input = document.querySelector(`[data-conversation-rename-input="${conversationId}"]`);
+    input?.focus();
+    input?.select();
+  }, 0);
+}
+
+function cancelConversationRename() {
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationDeleteConfirmId = null;
+  render();
+}
+
+function requestConversationDelete(conversationId) {
+  if (!conversationById(conversationId)) return;
+  state.conversationMenuId = conversationId;
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationDeleteConfirmId = conversationId;
+  render();
+}
+
+function cancelConversationDelete() {
+  state.conversationDeleteConfirmId = null;
+  render();
+}
+
+function saveConversationRename(conversationId) {
+  const conversation = conversationById(conversationId);
+  if (!conversation) return;
+  const title = state.conversationRenameDraft.trim();
+  if (!title) return cancelConversationRename();
+  state.conversations = state.conversations.map((item) => (
+    item.id === conversationId ? { ...item, title } : item
   ));
-  saveState();
+  state.conversationMenuId = null;
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationDeleteConfirmId = null;
+  saveState({ immediate: true });
+  render();
+}
+
+function moveConversationToProject(projectId, conversationId = state.activeConversation) {
+  const conversation = conversationById(conversationId);
+  if (!conversation) return;
+  const normalizedProjectId = projectById(projectId) ? projectId : null;
+  state.conversations = state.conversations.map((conversation) => (
+    conversation.id === conversationId ? { ...conversation, projectId: normalizedProjectId } : conversation
+  ));
+  if (conversationId === state.activeConversation) {
+    state.activeProject = normalizedProjectId;
+  }
+  state.conversationMenuId = null;
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationDeleteConfirmId = null;
+  saveState({ immediate: true });
+  render();
+}
+
+async function deleteConversation(conversationId) {
+  const conversation = conversationById(conversationId);
+  if (!conversation) return;
+  if (state.isSending && conversationId === state.activeConversation) return;
+
+  const files = conversationFiles(conversationId);
+  const deleteResults = await Promise.allSettled(files.map((file) => deleteStoredFile(file.id)));
+  const failedFileDeletes = deleteResults.filter((result) => result.status === 'rejected').length;
+  const wasActive = conversationId === state.activeConversation;
+  const remainingConversations = state.conversations.filter((item) => item.id !== conversationId);
+  const nextActive = wasActive ? remainingConversations[0] || null : currentConversation();
+
+  state.conversations = remainingConversations;
+  state.messagesByConversation = removeRecordKey(state.messagesByConversation, conversationId);
+  state.conversationFiles = removeRecordKey(state.conversationFiles, conversationId);
+  state.sessionSummaries = removeRecordKey(state.sessionSummaries, conversationId);
+  state.contextStats = removeRecordKey(state.contextStats, conversationId);
+  state.memoryUpdatedAt = {
+    ...state.memoryUpdatedAt,
+    sessions: removeRecordKey(state.memoryUpdatedAt?.sessions || {}, conversationId),
+  };
+  state.conversationMenuId = null;
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationDeleteConfirmId = null;
+  if (wasActive) {
+    state.activeConversation = nextActive?.id ?? null;
+    state.activeProject = nextActive?.projectId ?? null;
+    state.view = 'chat';
+    state.promptDraft = '';
+    state.promptCommands = [];
+  }
+  state.conversationFileError = failedFileDeletes
+    ? `${failedFileDeletes} session file(s) could not be deleted.`
+    : '';
+  saveState({ immediate: true });
   render();
 }
 
@@ -1893,13 +2032,82 @@ function renderWindowBar() {
   `;
 }
 
+function renderConversationProjectOption(conversation, project) {
+  const isGeneral = !project;
+  const projectId = project?.id || '';
+  const label = project?.name || 'General chat';
+  const active = isGeneral ? !conversation.projectId : conversation.projectId === projectId;
+  return `
+    <button class="conversation-project-option ${active ? 'active' : ''}" data-conversation-move-project="${conversation.id}" data-project-id="${escapeHtml(projectId)}">
+      <span>${escapeHtml(label)}</span>
+      ${active ? phIcon('check') : ''}
+    </button>
+  `;
+}
+
+function renderConversationMenu(conversation) {
+  if (state.conversationRenameId === conversation.id) {
+    return `
+      <div class="recent-menu" role="menu" aria-label="Rename session">
+        <label class="conversation-rename-field">
+          <span>Session name</span>
+          <input data-conversation-rename-input="${conversation.id}" value="${escapeHtml(state.conversationRenameDraft)}" />
+        </label>
+        <div class="conversation-rename-actions">
+          <button data-conversation-rename-cancel="${conversation.id}">Cancel</button>
+          <button class="primary" data-conversation-rename-save="${conversation.id}">Save</button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (state.conversationDeleteConfirmId === conversation.id) {
+    return `
+      <div class="recent-menu" role="menu" aria-label="Delete session confirmation">
+        <div class="conversation-delete-confirm">
+          <strong>Delete this session?</strong>
+          <p>This removes the chat, session memory, and session files.</p>
+        </div>
+        <div class="conversation-rename-actions">
+          <button data-conversation-delete-cancel="${conversation.id}">Cancel</button>
+          <button class="danger-confirm" data-conversation-delete-confirm="${conversation.id}">Delete</button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="recent-menu" role="menu" aria-label="Session options">
+      <button data-conversation-rename="${conversation.id}" role="menuitem">${phIcon('pencil-simple')}<span>Rename</span></button>
+      <div class="conversation-menu-section">
+        <p>Move to project</p>
+        <div class="conversation-project-list">
+          ${renderConversationProjectOption(conversation, null)}
+          ${allProjects().map((project) => renderConversationProjectOption(conversation, project)).join('')}
+        </div>
+      </div>
+      <button class="danger" data-conversation-delete="${conversation.id}" role="menuitem">${phIcon('trash')}<span>Delete session</span></button>
+    </div>
+  `;
+}
+
 function renderSidebar() {
   const nav = activeNav();
-  const recentItems = state.conversations.map((conversation) => `
-    <button class="recent-link ${conversation.id === state.activeConversation && nav === 'chat' ? 'active' : ''}" data-conversation="${conversation.id}" title="${escapeHtml(conversation.title)}">
-      ${escapeHtml(conversation.title)}
-    </button>
-  `).join('');
+  const recentItems = state.conversations.map((conversation) => {
+    const isActive = conversation.id === state.activeConversation;
+    const menuOpen = state.conversationMenuId === conversation.id;
+    const project = projectById(conversation.projectId);
+    return `
+      <div class="recent-item ${isActive ? 'active' : ''} ${menuOpen ? 'menu-open' : ''}">
+        <button class="recent-link ${isActive && nav === 'chat' ? 'active' : ''}" data-conversation="${conversation.id}" title="${escapeHtml(conversation.title)}">
+          <span class="recent-title">${escapeHtml(conversation.title)}</span>
+          ${project ? `<span class="recent-project-marker" title="${escapeHtml(project.name)}" aria-label="Project: ${escapeHtml(project.name)}">${phIcon('folder-simple')}</span>` : ''}
+        </button>
+        <button class="recent-menu-trigger" data-conversation-menu="${conversation.id}" aria-label="Session options for ${escapeHtml(conversation.title)}">${phIcon('dots-three')}</button>
+        ${menuOpen ? renderConversationMenu(conversation) : ''}
+      </div>
+    `;
+  }).join('');
 
   return `
     <aside class="app-sidebar ${state.sidebarCollapsed ? 'collapsed' : ''}">
@@ -2495,7 +2703,7 @@ function renderApiKeySettings() {
               <input
                 class="api-key-input"
                 type="password"
-                placeholder="sk-ant-..."
+                placeholder="sk-..."
                 value="${escapeHtml(key)}"
                 data-api-key-family="${family.id}"
                 data-api-key-index="${index}"
@@ -2525,8 +2733,8 @@ function renderSettingsContent() {
       <div class="settings-row"><label for="profile-call-name">What should Claude call you?</label><input id="profile-call-name" value="${escapeHtml(state.profile.callName)}" /></div>
       <div class="settings-row"><label for="profile-work">What best describes your work?</label><select id="profile-work"><option value="">Select</option><option ${state.profile.work === 'Research' ? 'selected' : ''}>Research</option><option ${state.profile.work === 'Engineering' ? 'selected' : ''}>Engineering</option><option ${state.profile.work === 'Founder' ? 'selected' : ''}>Founder</option></select></div>
       <div class="settings-section-block">
-        <h3>API keys per model</h3>
-        <p>The local proxy uses keys for the active model. If the first key fails, the server automatically tries the next key in the same model family.</p>
+        <h3>OpenAI-compatible API keys</h3>
+        <p>The local proxy uses the active model against <code>http://localhost:20128/v1</code>. Keys are optional for local endpoints; if the first key fails, the server automatically tries the next key in the same model family.</p>
         <div class="api-key-settings">${renderApiKeySettings()}</div>
         <small>Keys are saved automatically in the local backend <code>data/store.json</code>, not in browser localStorage.</small>
       </div>
@@ -2638,6 +2846,10 @@ async function openConversation(conversationId) {
   state.activeConversation = conversationId;
   state.activeProject = conversation?.projectId ?? null;
   state.view = 'chat';
+  state.conversationMenuId = null;
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationDeleteConfirmId = null;
   state.conversationFileError = '';
   saveState();
   render();
@@ -2810,8 +3022,23 @@ function handleClick(event) {
   document.querySelectorAll('.skill-actions-disclosure[open]').forEach((menu) => {
     if (menu !== activeSkillActions) menu.removeAttribute('open');
   });
+  if (!event.target.closest('.recent-item') && state.conversationMenuId !== null) {
+    state.conversationMenuId = null;
+    state.conversationRenameId = null;
+    state.conversationRenameDraft = '';
+    state.conversationDeleteConfirmId = null;
+    render();
+  }
 
   const conversationButton = event.target.closest('[data-conversation]');
+  const conversationMenuButton = event.target.closest('[data-conversation-menu]');
+  const conversationRenameButton = event.target.closest('[data-conversation-rename]');
+  const conversationRenameSaveButton = event.target.closest('[data-conversation-rename-save]');
+  const conversationRenameCancelButton = event.target.closest('[data-conversation-rename-cancel]');
+  const conversationMoveProjectButton = event.target.closest('[data-conversation-move-project]');
+  const conversationDeleteButton = event.target.closest('[data-conversation-delete]');
+  const conversationDeleteConfirmButton = event.target.closest('[data-conversation-delete-confirm]');
+  const conversationDeleteCancelButton = event.target.closest('[data-conversation-delete-cancel]');
   const openProjectButton = event.target.closest('[data-open-project]');
   const quickButton = event.target.closest('[data-quick]');
   const actionButton = event.target.closest('[data-action]');
@@ -2833,6 +3060,27 @@ function handleClick(event) {
     const [familyId, index] = apiKeyRemoveButton.dataset.apiKeyRemove.split(':');
     return removeApiKeyRow(familyId, index);
   }
+  if (conversationMenuButton) {
+    const conversationId = Number(conversationMenuButton.dataset.conversationMenu);
+    state.conversationMenuId = state.conversationMenuId === conversationId ? null : conversationId;
+    state.conversationRenameId = null;
+    state.conversationRenameDraft = '';
+    state.conversationDeleteConfirmId = null;
+    render();
+    return;
+  }
+  if (conversationRenameButton) return startConversationRename(Number(conversationRenameButton.dataset.conversationRename));
+  if (conversationRenameSaveButton) return saveConversationRename(Number(conversationRenameSaveButton.dataset.conversationRenameSave));
+  if (conversationRenameCancelButton) return cancelConversationRename();
+  if (conversationDeleteCancelButton) return cancelConversationDelete();
+  if (conversationDeleteConfirmButton) return deleteConversation(Number(conversationDeleteConfirmButton.dataset.conversationDeleteConfirm));
+  if (conversationMoveProjectButton) {
+    return moveConversationToProject(
+      conversationMoveProjectButton.dataset.projectId || null,
+      Number(conversationMoveProjectButton.dataset.conversationMoveProject),
+    );
+  }
+  if (conversationDeleteButton) return requestConversationDelete(Number(conversationDeleteButton.dataset.conversationDelete));
   if (conversationFileDeleteButton) return removeConversationFile(conversationFileDeleteButton.dataset.conversationFileDelete);
   if (conversationFileToggleButton) return toggleConversationFileContext(conversationFileToggleButton.dataset.conversationFileToggle);
   if (projectFileDeleteButton) return removeProjectFile(projectFileDeleteButton.dataset.projectFileDelete);
@@ -2922,10 +3170,12 @@ function handleChange(event) {
     return;
   }
   if (event.target.id === 'model-select') {
+    const nextModel = normalizeModelId(event.target.value);
     state.conversations = state.conversations.map((conversation) => (
-      conversation.id === state.activeConversation ? { ...conversation, model: event.target.value } : conversation
+      conversation.id === state.activeConversation ? { ...conversation, model: nextModel } : conversation
     ));
-    setState({ model: event.target.value });
+    setState({ model: nextModel });
+    refreshTokenCount();
   }
   if (event.target.id === 'tone-select') setState({ tone: event.target.value });
   if (event.target.dataset.skill) {
@@ -2943,6 +3193,9 @@ function handleInput(event) {
     state.memoryEditDraft = event.target.value;
     syncMemoryEditSubmitState();
   }
+  if (event.target.dataset.conversationRenameInput) {
+    state.conversationRenameDraft = event.target.value;
+  }
   if (event.target.closest('.skill-modal-fields')) updateSkillModalSubmitState();
   if (event.target.dataset.apiKeyFamily) {
     setApiKeyValue(event.target.dataset.apiKeyFamily, event.target.dataset.apiKeyIndex, event.target.value);
@@ -2956,6 +3209,18 @@ function handleInput(event) {
 }
 
 function handleKeydown(event) {
+  if (event.target.dataset.conversationRenameInput) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveConversationRename(Number(event.target.dataset.conversationRenameInput));
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelConversationRename();
+      return;
+    }
+  }
   if (event.target.id === 'prompt-input') {
     if (slashMenuState.open && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
       event.preventDefault();
@@ -2997,6 +3262,12 @@ function handleKeydown(event) {
   } else if (event.key === 'Escape' && document.querySelector('.skill-create-disclosure[open], .skill-actions-disclosure[open]')) {
     document.querySelectorAll('.skill-create-disclosure[open]').forEach((menu) => menu.removeAttribute('open'));
     document.querySelectorAll('.skill-actions-disclosure[open]').forEach((menu) => menu.removeAttribute('open'));
+  } else if (event.key === 'Escape' && state.conversationMenuId !== null) {
+    state.conversationMenuId = null;
+    state.conversationRenameId = null;
+    state.conversationRenameDraft = '';
+    state.conversationDeleteConfirmId = null;
+    render();
   } else if (event.key === 'Escape' && state.memoryModalScope) closeMemoryModal();
   else if (event.key === 'Escape' && state.settingsOpen) setState({ settingsOpen: false });
 }

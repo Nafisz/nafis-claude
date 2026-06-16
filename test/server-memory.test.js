@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildSystemPrompt, buildMemoryPrompt, parseAnthropicStream, selectRequestedTools } = require('../server');
+const { buildSystemPrompt, buildMemoryPrompt, parseOpenAiStream, selectRequestedTools } = require('../server');
 
 const projectMemory = `Purpose & context
 NovaX Arena trains decision-making under novelty.
@@ -50,7 +50,8 @@ const {
   testAtlassianConnection,
   apiKeysFromRequest,
   modelKeyFamily,
-  callAnthropicJsonWithFallback,
+  normalizeModelId,
+  callOpenAiJsonWithFallback,
 } = require('../server');
 
 test('Atlassian tool registry exposes read and explicit-write operations with strict schemas', () => {
@@ -202,56 +203,58 @@ test('explicit tool selection exposes only known requested tools', () => {
   assert.deepEqual(selectRequestedTools(atlassianTools(), []).tools.map((tool) => tool.name), atlassianTools().map((tool) => tool.name));
 });
 
-test('Anthropic API keys are selected from the matching model family', () => {
+test('OpenAI-compatible API keys are selected from the matching model family', () => {
   const previousEnv = {
-    key: process.env.ANTHROPIC_API_KEY,
-    keys: process.env.ANTHROPIC_API_KEYS,
-    sonnet: process.env.ANTHROPIC_SONNET_API_KEYS,
+    key: process.env.OPENAI_API_KEY,
+    keys: process.env.OPENAI_API_KEYS,
+    sonnet: process.env.OPENAI_SONNET_API_KEYS,
   };
-  delete process.env.ANTHROPIC_API_KEY;
-  delete process.env.ANTHROPIC_API_KEYS;
-  process.env.ANTHROPIC_SONNET_API_KEYS = 'env-sonnet-1, env-sonnet-2';
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEYS;
+  process.env.OPENAI_SONNET_API_KEYS = 'env-sonnet-1, env-sonnet-2';
   try {
-    assert.equal(modelKeyFamily('claude-opus-4-8'), 'opus');
-    assert.equal(modelKeyFamily('claude-haiku-4-5-20251001'), 'haiku');
+    assert.equal(normalizeModelId('claude-opus-4-8'), 'ag/claude-opus-4-6-thinking');
+    assert.equal(normalizeModelId('claude-haiku-4-5-20251001'), 'ag/claude-sonnet-4-6');
+    assert.equal(modelKeyFamily('ag/claude-opus-4-6-thinking'), 'opus');
+    assert.equal(modelKeyFamily('claude-haiku-4-5-20251001'), 'sonnet');
     assert.deepEqual(apiKeysFromRequest({
       apiKeysByModel: {
         opus: ['opus-1'],
         sonnet: ['sonnet-1', 'sonnet-2'],
-        haiku: ['haiku-1'],
       },
       apiKeys: ['request-generic'],
-    }, 'claude-sonnet-4-6'), ['sonnet-1', 'sonnet-2', 'request-generic', 'env-sonnet-1', 'env-sonnet-2']);
+    }, 'ag/claude-sonnet-4-6'), ['sonnet-1', 'sonnet-2', 'request-generic', 'env-sonnet-1', 'env-sonnet-2']);
   } finally {
-    if (previousEnv.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = previousEnv.key;
-    if (previousEnv.keys === undefined) delete process.env.ANTHROPIC_API_KEYS; else process.env.ANTHROPIC_API_KEYS = previousEnv.keys;
-    if (previousEnv.sonnet === undefined) delete process.env.ANTHROPIC_SONNET_API_KEYS; else process.env.ANTHROPIC_SONNET_API_KEYS = previousEnv.sonnet;
+    if (previousEnv.key === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousEnv.key;
+    if (previousEnv.keys === undefined) delete process.env.OPENAI_API_KEYS; else process.env.OPENAI_API_KEYS = previousEnv.keys;
+    if (previousEnv.sonnet === undefined) delete process.env.OPENAI_SONNET_API_KEYS; else process.env.OPENAI_SONNET_API_KEYS = previousEnv.sonnet;
   }
 });
 
-test('Anthropic JSON calls fall back to the next API key after a retryable failure', async () => {
+test('OpenAI-compatible JSON calls fall back to the next API key after a retryable failure', async () => {
   const originalFetch = global.fetch;
   const usedKeys = [];
-  global.fetch = async (_url, options = {}) => {
-    usedKeys.push(options.headers['x-api-key']);
+  global.fetch = async (url, options = {}) => {
+    assert.equal(String(url), 'http://localhost:20128/v1/chat/completions');
+    usedKeys.push(options.headers.authorization);
     if (usedKeys.length === 1) {
       return new Response(JSON.stringify({ error: { message: 'invalid key' } }), { status: 401 });
     }
     return new Response(JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      usage: { input_tokens: 1, output_tokens: 1 },
-      content: [{ type: 'text', text: 'ok' }],
+      model: 'ag/claude-sonnet-4-6',
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
     }), { status: 200 });
   };
   try {
-    const result = await callAnthropicJsonWithFallback({
+    const result = await callOpenAiJsonWithFallback({
       apiKeys: ['bad-key', 'good-key'],
-      model: 'claude-sonnet-4-6',
+      model: 'ag/claude-sonnet-4-6',
       system: '',
       messages: [{ role: 'user', content: 'Hello' }],
       maxTokens: 8,
     });
-    assert.deepEqual(usedKeys, ['bad-key', 'good-key']);
+    assert.deepEqual(usedKeys, ['Bearer bad-key', 'Bearer good-key']);
     assert.equal(result.content[0].text, 'ok');
   } finally {
     global.fetch = originalFetch;
@@ -265,10 +268,10 @@ test('tool results are bounded before being exposed to UI/model context', () => 
 });
 
 
-test('Anthropic SSE parser surfaces upstream error events', async () => {
-  const payload = 'event: error\ndata: {"type":"error","error":{"message":"overloaded"}}\n\n';
+test('OpenAI-compatible SSE parser surfaces upstream error events', async () => {
+  const payload = 'data: {"error":{"message":"overloaded"}}\n\n';
   const response = new Response(payload, { headers: { 'content-type': 'text/event-stream' } });
-  await assert.rejects(() => parseAnthropicStream(response, { onEvent() {} }), /overloaded/);
+  await assert.rejects(() => parseOpenAiStream(response, { onEvent() {} }), /overloaded/);
 });
 
 

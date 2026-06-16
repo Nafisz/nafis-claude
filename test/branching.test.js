@@ -6,7 +6,7 @@ const source = {
   id: 10,
   title: 'NovaX architecture',
   projectId: 'nova',
-  model: 'claude-sonnet-4-6',
+  model: 'ag/claude-sonnet-4-6',
 };
 const messages = [
   { id: 'm1', role: 'user', text: 'Design the runtime.' },
@@ -25,7 +25,7 @@ test('branches through a selected message and preserves inherited project/model'
     idFactory: () => `copy-${++sequence}`,
   });
   assert.equal(result.conversation.projectId, 'nova');
-  assert.equal(result.conversation.model, 'claude-sonnet-4-6');
+  assert.equal(result.conversation.model, 'ag/claude-sonnet-4-6');
   assert.equal(result.conversation.parentConversationId, 10);
   assert.equal(result.conversation.rootConversationId, 10);
   assert.equal(result.conversation.branchPointMessageId, 'm2');

@@ -15,9 +15,15 @@ const { formatTriggeredSkills, isMutationAuthorized, runAgentLoop, runJsonAgentL
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
 const DATA_DIR = path.resolve(process.env.FILE_DATA_DIR || path.join(ROOT, 'data'));
-const ANTHROPIC_VERSION = '2023-06-01';
+const DEFAULT_OPENAI_BASE_URL = 'http://localhost:20128/v1';
+const OPENAI_BASE_URL = String(process.env.OPENAI_BASE_URL || process.env.AI_BASE_URL || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, '');
+const MODEL_IDS = Object.freeze({
+  sonnet: 'ag/claude-sonnet-4-6',
+  opus: 'ag/claude-opus-4-6-thinking',
+});
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const DEFAULT_MODEL = MODEL_IDS.sonnet;
+const MEMORY_MODEL = MODEL_IDS.sonnet;
 const MAX_TOOL_LOOPS = 4;
 let runtimeAtlassianConfig = null;
 let atlassianDisconnected = false;
@@ -40,17 +46,16 @@ const ERROR_MESSAGES = {
   401: 'API key invalid.',
   403: 'The API key does not have access to this model.',
   429: 'Rate limit hit. Wait a moment.',
-  500: 'Anthropic server error.',
-  529: 'Claude is overloaded. Try again shortly.',
+  500: 'AI server error.',
+  529: 'The AI endpoint is overloaded. Try again shortly.',
 };
 
 const MODEL_KEY_FAMILIES = [
-  { id: 'opus', pattern: /opus/i, envPrefix: 'ANTHROPIC_OPUS' },
-  { id: 'sonnet', pattern: /sonnet/i, envPrefix: 'ANTHROPIC_SONNET' },
-  { id: 'haiku', pattern: /haiku/i, envPrefix: 'ANTHROPIC_HAIKU' },
+  { id: 'opus', pattern: /opus/i, envPrefixes: ['OPENAI_OPUS', 'AI_OPUS', 'ANTHROPIC_OPUS'] },
+  { id: 'sonnet', pattern: /sonnet|haiku/i, envPrefixes: ['OPENAI_SONNET', 'AI_SONNET', 'ANTHROPIC_SONNET', 'ANTHROPIC_HAIKU'] },
 ];
 
-const ANTHROPIC_FALLBACK_STATUSES = new Set([401, 403, 408, 409, 429, 500, 502, 503, 504, 529]);
+const OPENAI_FALLBACK_STATUSES = new Set([401, 403, 408, 409, 429, 500, 502, 503, 504, 529]);
 
 function sendJson(res, status, payload) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -141,18 +146,46 @@ function dedupeApiKeys(keys = []) {
   return [...new Set(keys.map((key) => String(key || '').trim()).filter(Boolean))];
 }
 
+function isLocalOpenAiEndpoint(baseUrl = OPENAI_BASE_URL) {
+  try {
+    const { hostname } = new URL(baseUrl);
+    return ['localhost', '127.0.0.1', '::1'].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeModelId(model = DEFAULT_MODEL) {
+  const value = String(model || DEFAULT_MODEL).trim();
+  if (/opus/i.test(value)) return MODEL_IDS.opus;
+  if (/sonnet|haiku/i.test(value)) return MODEL_IDS.sonnet;
+  return value || DEFAULT_MODEL;
+}
+
 function modelKeyFamily(model = DEFAULT_MODEL) {
-  const match = MODEL_KEY_FAMILIES.find((family) => family.pattern.test(String(model || '')));
+  const match = MODEL_KEY_FAMILIES.find((family) => family.pattern.test(String(model || normalizeModelId(model))));
   return match?.id || 'sonnet';
 }
 
 function envApiKeysForModel(model = DEFAULT_MODEL) {
   const family = MODEL_KEY_FAMILIES.find((item) => item.id === modelKeyFamily(model));
-  const modelEnvKey = `ANTHROPIC_${String(model || DEFAULT_MODEL).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEYS`;
+  const modelEnvFragment = String(normalizeModelId(model)).toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  const familyKeys = (family?.envPrefixes || []).flatMap((prefix) => [
+    ...splitApiKeys(process.env[`${prefix}_API_KEYS`]),
+    ...splitApiKeys(process.env[`${prefix}_API_KEY`]),
+  ]);
   return dedupeApiKeys([
-    ...splitApiKeys(process.env[modelEnvKey]),
-    ...splitApiKeys(family ? process.env[`${family.envPrefix}_API_KEYS`] : ''),
-    ...splitApiKeys(family ? process.env[`${family.envPrefix}_API_KEY`] : ''),
+    ...splitApiKeys(process.env[`OPENAI_${modelEnvFragment}_API_KEYS`]),
+    ...splitApiKeys(process.env[`OPENAI_${modelEnvFragment}_API_KEY`]),
+    ...splitApiKeys(process.env[`AI_${modelEnvFragment}_API_KEYS`]),
+    ...splitApiKeys(process.env[`AI_${modelEnvFragment}_API_KEY`]),
+    ...splitApiKeys(process.env[`ANTHROPIC_${modelEnvFragment}_API_KEYS`]),
+    ...splitApiKeys(process.env[`ANTHROPIC_${modelEnvFragment}_API_KEY`]),
+    ...familyKeys,
+    ...splitApiKeys(process.env.OPENAI_API_KEYS),
+    ...splitApiKeys(process.env.OPENAI_API_KEY),
+    ...splitApiKeys(process.env.AI_API_KEYS),
+    ...splitApiKeys(process.env.AI_API_KEY),
     ...splitApiKeys(process.env.ANTHROPIC_API_KEYS),
     ...splitApiKeys(process.env.ANTHROPIC_API_KEY),
   ]);
@@ -161,8 +194,10 @@ function envApiKeysForModel(model = DEFAULT_MODEL) {
 function storedApiKeysForModel(appState = null, model = DEFAULT_MODEL) {
   const family = modelKeyFamily(model);
   const byModel = appState?.apiKeysByModel && typeof appState.apiKeysByModel === 'object' ? appState.apiKeysByModel : {};
+  const normalizedModel = normalizeModelId(model);
   return dedupeApiKeys([
     ...splitApiKeys(byModel[model]),
+    ...splitApiKeys(byModel[normalizedModel]),
     ...splitApiKeys(byModel[family]),
   ]);
 }
@@ -170,8 +205,10 @@ function storedApiKeysForModel(appState = null, model = DEFAULT_MODEL) {
 function apiKeysFromRequest(body = {}, model = DEFAULT_MODEL, appState = null) {
   const family = modelKeyFamily(model);
   const byModel = body.apiKeysByModel && typeof body.apiKeysByModel === 'object' ? body.apiKeysByModel : {};
+  const normalizedModel = normalizeModelId(model);
   return dedupeApiKeys([
     ...splitApiKeys(byModel[model]),
+    ...splitApiKeys(byModel[normalizedModel]),
     ...splitApiKeys(byModel[family]),
     ...splitApiKeys(body.apiKeys),
     ...splitApiKeys(body.apiKey),
@@ -181,42 +218,48 @@ function apiKeysFromRequest(body = {}, model = DEFAULT_MODEL, appState = null) {
 }
 
 function hasServerApiKeys(appState = null) {
-  return Boolean(envApiKeysForModel(DEFAULT_MODEL).length
+  return Boolean(isLocalOpenAiEndpoint()
+    || envApiKeysForModel(DEFAULT_MODEL).length
     || storedApiKeysForModel(appState, DEFAULT_MODEL).length
     || MODEL_KEY_FAMILIES.some((family) => (
-      splitApiKeys(process.env[`${family.envPrefix}_API_KEYS`]).length
-      || splitApiKeys(process.env[`${family.envPrefix}_API_KEY`]).length
+      (family.envPrefixes || []).some((prefix) => (
+        splitApiKeys(process.env[`${prefix}_API_KEYS`]).length
+        || splitApiKeys(process.env[`${prefix}_API_KEY`]).length
+      ))
       || storedApiKeysForModel(appState, family.id).length
     )));
 }
 
-function shouldFallbackAnthropicError(error) {
+function shouldFallbackOpenAiError(error) {
   if (!error?.status) return true;
-  return ANTHROPIC_FALLBACK_STATUSES.has(Number(error.status));
+  return OPENAI_FALLBACK_STATUSES.has(Number(error.status));
 }
 
-async function withAnthropicApiKeyFallback(apiKeys, operation) {
+async function withOpenAiApiKeyFallback(apiKeys, operation) {
   const keys = dedupeApiKeys(apiKeys);
-  if (!keys.length) throw new Error('API key is unavailable. Add a key for this model in Settings or run the server with ANTHROPIC_API_KEY.');
+  if (!keys.length && !isLocalOpenAiEndpoint()) {
+    throw new Error('API key is unavailable. Add a key for this model in Settings or run the server with OPENAI_API_KEY.');
+  }
+  const candidates = keys.length ? keys : [''];
   let lastError;
   const failures = [];
-  for (let index = 0; index < keys.length; index += 1) {
+  for (let index = 0; index < candidates.length; index += 1) {
     try {
-      const result = await operation(keys[index], index);
-      if (result && typeof result === 'object' && !result.apiKeyIndex) {
+      const result = await operation(candidates[index], index);
+      if (result && typeof result === 'object' && candidates[index] && !result.apiKeyIndex) {
         result.apiKeyIndex = index + 1;
       }
       return result;
     } catch (error) {
       lastError = error;
-      failures.push(`key ${index + 1}${error.status ? ` HTTP ${error.status}` : ''}`);
-      if (index === keys.length - 1 || !shouldFallbackAnthropicError(error)) break;
+      failures.push(`${candidates[index] ? `key ${index + 1}` : 'local endpoint'}${error.status ? ` HTTP ${error.status}` : ''}`);
+      if (index === candidates.length - 1 || !shouldFallbackOpenAiError(error)) break;
     }
   }
   if (failures.length > 1 && lastError) {
-    lastError.message = `${lastError.message || 'Claude API request failed.'} (${failures.join(', ')})`;
+    lastError.message = `${lastError.message || 'AI API request failed.'} (${failures.join(', ')})`;
   }
-  throw lastError || new Error('Claude API request failed.');
+  throw lastError || new Error('AI API request failed.');
 }
 
 async function handleFileList(req, res, url) {
@@ -627,12 +670,34 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchAnthropic(options, attempts = 3) {
+function openAiUrl(pathname) {
+  const cleanPath = String(pathname || '').startsWith('/') ? pathname : `/${pathname}`;
+  return `${OPENAI_BASE_URL}${cleanPath}`;
+}
+
+function openAiHeaders(apiKey = '') {
+  return {
+    'content-type': 'application/json',
+    ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+  };
+}
+
+async function responseJsonOrRaw(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+async function fetchOpenAi(pathname, options, attempts = 3) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', options);
-      if (![429, 529].includes(response.status) || attempt === attempts - 1) return response;
+      const response = await fetch(openAiUrl(pathname), options);
+      if (![408, 409, 429, 500, 502, 503, 504, 529].includes(response.status) || attempt === attempts - 1) return response;
       lastError = new Error(ERROR_MESSAGES[response.status]);
       await response.body?.cancel();
     } catch (error) {
@@ -641,39 +706,179 @@ async function fetchAnthropic(options, attempts = 3) {
     }
     await sleep(500 * (2 ** attempt));
   }
-  throw lastError || new Error('Claude API request failed.');
+  throw lastError || new Error('AI API request failed.');
 }
 
-async function callAnthropicJson({ apiKey, model, system, messages, maxTokens, tools = [] }) {
-  const response = await fetchAnthropic({
+function openAiTools(tools = []) {
+  return tools.map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description || '',
+      parameters: tool.input_schema || { type: 'object', properties: {} },
+    },
+  }));
+}
+
+function parseToolArguments(raw = '') {
+  try {
+    const parsed = JSON.parse(String(raw || '{}'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function contentBlocksText(content = []) {
+  if (!Array.isArray(content)) return String(content || '');
+  return content.filter((block) => block?.type === 'text').map((block) => block.text || '').join('\n\n');
+}
+
+function openAiText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => {
+    if (typeof part === 'string') return part;
+    return part?.text || part?.content || '';
+  }).join('');
+}
+
+function openAiMessages({ system = '', messages = [] }) {
+  const converted = [];
+  if (system) converted.push({ role: 'system', content: system });
+
+  for (const message of messages) {
+    if (!['user', 'assistant'].includes(message.role)) continue;
+    const content = message.content ?? message.text ?? '';
+
+    if (message.role === 'assistant' && Array.isArray(content)) {
+      const toolUses = content.filter((block) => block?.type === 'tool_use');
+      converted.push({
+        role: 'assistant',
+        content: contentBlocksText(content) || null,
+        ...(toolUses.length ? {
+          tool_calls: toolUses.map((tool) => ({
+            id: tool.id,
+            type: 'function',
+            function: {
+              name: tool.name,
+              arguments: JSON.stringify(tool.input && typeof tool.input === 'object' ? tool.input : {}),
+            },
+          })),
+        } : {}),
+      });
+      continue;
+    }
+
+    if (message.role === 'user' && Array.isArray(content)) {
+      const text = contentBlocksText(content);
+      if (text) converted.push({ role: 'user', content: text });
+      content
+        .filter((block) => block?.type === 'tool_result')
+        .forEach((block) => {
+          converted.push({
+            role: 'tool',
+            tool_call_id: block.tool_use_id,
+            content: String(block.content || ''),
+          });
+        });
+      continue;
+    }
+
+    converted.push({ role: message.role, content: String(content || '') });
+  }
+  return converted;
+}
+
+function normalizeOpenAiUsage(usage = {}) {
+  if (!usage || typeof usage !== 'object') return {};
+  return {
+    ...usage,
+    input_tokens: usage.input_tokens ?? usage.prompt_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? usage.completion_tokens ?? 0,
+  };
+}
+
+function mergeTokenUsage(total = {}, next = {}) {
+  const normalized = normalizeOpenAiUsage(next);
+  const merged = { ...total };
+  for (const [key, value] of Object.entries(normalized)) {
+    merged[key] = typeof value === 'number' ? Number(merged[key] || 0) + value : value;
+  }
+  return merged;
+}
+
+function normalizeOpenAiFinishReason(reason = '') {
+  if (reason === 'tool_calls' || reason === 'function_call') return 'tool_use';
+  if (reason === 'length') return 'max_tokens';
+  return 'end_turn';
+}
+
+function openAiResponseToInternal(data = {}, requestedModel = DEFAULT_MODEL) {
+  const choice = Array.isArray(data.choices) ? data.choices[0] || {} : {};
+  const message = choice.message || {};
+  const content = openAiText(message.content);
+  const blocks = [];
+  if (content) blocks.push({ type: 'text', text: content });
+  for (const toolCall of message.tool_calls || []) {
+    const name = toolCall.function?.name || toolCall.name;
+    if (!name) continue;
+    blocks.push({
+      type: 'tool_use',
+      id: toolCall.id || `tool_${blocks.length}`,
+      name,
+      input: parseToolArguments(toolCall.function?.arguments || toolCall.arguments || '{}'),
+    });
+  }
+  return {
+    model: data.model || normalizeModelId(requestedModel),
+    usage: normalizeOpenAiUsage(data.usage),
+    content: blocks,
+    stop_reason: blocks.some((block) => block.type === 'tool_use')
+      ? 'tool_use'
+      : normalizeOpenAiFinishReason(choice.finish_reason),
+  };
+}
+
+function openAiRequestBody({ model, system, messages, maxTokens, tools = [], stream = false }) {
+  return {
+    model: normalizeModelId(model),
+    messages: openAiMessages({ system, messages }),
+    max_tokens: maxTokens,
+    ...(tools.length ? { tools: openAiTools(tools), tool_choice: 'auto' } : {}),
+    ...(stream ? { stream: true } : {}),
+  };
+}
+
+async function callOpenAiJson({ apiKey, model, system, messages, maxTokens, tools = [] }) {
+  const response = await fetchOpenAi('/chat/completions', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': apiKey },
-    body: JSON.stringify({ model, max_tokens: maxTokens, system, messages, ...(tools.length ? { tools, tool_choice: { type: 'auto' } } : {}) }),
+    headers: openAiHeaders(apiKey),
+    body: JSON.stringify(openAiRequestBody({ model, system, messages, maxTokens, tools })),
   });
-  const data = await response.json();
+  const data = await responseJsonOrRaw(response);
   if (!response.ok) {
-    const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Claude API request failed.');
+    const error = new Error(data?.error?.message || data?.message || data?.raw || ERROR_MESSAGES[response.status] || 'AI API request failed.');
     error.status = response.status;
     error.details = data?.error || data;
     throw error;
   }
-  return data;
+  return openAiResponseToInternal(data, model);
 }
 
-function callAnthropicJsonWithFallback({ apiKeys, model, system, messages, maxTokens, tools = [] }) {
-  return withAnthropicApiKeyFallback(apiKeys, (apiKey) => callAnthropicJson({ apiKey, model, system, messages, maxTokens, tools }));
+function callOpenAiJsonWithFallback({ apiKeys, model, system, messages, maxTokens, tools = [] }) {
+  return withOpenAiApiKeyFallback(apiKeys, (apiKey) => callOpenAiJson({ apiKey, model, system, messages, maxTokens, tools }));
 }
 
-async function callAnthropicStream({ apiKey, model, system, messages, maxTokens, tools }) {
-  const response = await fetchAnthropic({
+async function callOpenAiStream({ apiKey, model, system, messages, maxTokens, tools }) {
+  const response = await fetchOpenAi('/chat/completions', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': apiKey },
-    body: JSON.stringify({ model, max_tokens: maxTokens, system, messages, ...(tools.length ? { tools, tool_choice: { type: 'auto' } } : {}), stream: true }),
+    headers: openAiHeaders(apiKey),
+    body: JSON.stringify(openAiRequestBody({ model, system, messages, maxTokens, tools, stream: true })),
   });
   if (!response.ok) {
-    let data = {};
-    try { data = await response.json(); } catch {}
-    const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Claude API request failed.');
+    const data = await responseJsonOrRaw(response);
+    const error = new Error(data?.error?.message || data?.message || data?.raw || ERROR_MESSAGES[response.status] || 'AI API request failed.');
     error.status = response.status;
     error.details = data?.error || data;
     throw error;
@@ -681,50 +886,84 @@ async function callAnthropicStream({ apiKey, model, system, messages, maxTokens,
   return response;
 }
 
-function callAnthropicStreamWithFallback({ apiKeys, model, system, messages, maxTokens, tools }) {
-  return withAnthropicApiKeyFallback(apiKeys, (apiKey) => callAnthropicStream({ apiKey, model, system, messages, maxTokens, tools }));
+function callOpenAiStreamWithFallback({ apiKeys, model, system, messages, maxTokens, tools }) {
+  return withOpenAiApiKeyFallback(apiKeys, (apiKey) => callOpenAiStream({ apiKey, model, system, messages, maxTokens, tools }));
 }
 
-async function callAnthropicCountTokens({ apiKeys, model, system, messages, tools = [] }) {
-  return withAnthropicApiKeyFallback(apiKeys, async (apiKey) => {
-    const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': apiKey },
-      body: JSON.stringify({ model, system, messages, ...(tools.length ? { tools } : {}) }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Token counting failed.');
-      error.status = response.status;
-      error.details = data?.error || data;
-      throw error;
-    }
-    return data;
-  });
+function callOpenAiCountTokens({ model, system, messages, tools = [] }) {
+  const body = openAiRequestBody({ model, system, messages, maxTokens: 1, tools });
+  const input = JSON.stringify(body);
+  const inputTokens = Math.ceil(input.length / 4);
+  return {
+    input_tokens: inputTokens,
+    token_count: inputTokens,
+    model: normalizeModelId(model),
+  };
 }
 
-async function parseAnthropicStream(response, handlers) {
+async function parseOpenAiStream(response, handlers) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let eventName = '';
   let dataLines = [];
+  let textBlockStarted = false;
+  let textBlockIndex = 0;
+  let nextBlockIndex = 0;
+  let finishReason = null;
+  let usage = {};
+  const toolCalls = [];
 
-  async function flushEvent() {
+  async function emit(eventName, event) {
+    await handlers.onEvent?.(eventName, event);
+  }
+
+  async function ensureTextBlock() {
+    if (textBlockStarted) return;
+    textBlockStarted = true;
+    textBlockIndex = nextBlockIndex;
+    nextBlockIndex += 1;
+    await emit('content_block_start', { type: 'content_block_start', index: textBlockIndex, content_block: { type: 'text', text: '' } });
+  }
+
+  function mergeToolCall(delta = {}) {
+    const index = Number.isInteger(delta.index) ? delta.index : toolCalls.length;
+    const current = toolCalls[index] || { id: delta.id || `tool_${index}`, name: '', arguments: '' };
+    current.id = delta.id || current.id;
+    current.name = delta.function?.name || delta.name || current.name;
+    current.arguments += delta.function?.arguments || delta.arguments || '';
+    toolCalls[index] = current;
+  }
+
+  async function flushData() {
     if (!dataLines.length) return;
     const raw = dataLines.join('\n');
     dataLines = [];
     if (raw === '[DONE]') return;
-    let event;
-    try { event = JSON.parse(raw); } catch { return; }
-    if (event.type === 'error') {
-      const error = new Error(event.error?.message || 'Claude stream error.');
-      error.details = event.error || event;
+    let chunk;
+    try { chunk = JSON.parse(raw); } catch { return; }
+    if (chunk.error) {
+      const error = new Error(chunk.error.message || 'AI stream error.');
+      error.details = chunk.error;
       throw error;
     }
-    await handlers.onEvent?.(eventName || event.type, event);
-    eventName = '';
+    usage = mergeTokenUsage(usage, chunk.usage);
+    for (const choice of chunk.choices || []) {
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice.delta || choice.message || {};
+      const text = openAiText(delta.content);
+      if (text) {
+        await ensureTextBlock();
+        await emit('content_block_delta', {
+          type: 'content_block_delta',
+          index: textBlockIndex,
+          delta: { type: 'text_delta', text },
+        });
+      }
+      for (const toolCall of delta.tool_calls || []) mergeToolCall(toolCall);
+    }
   }
+
+  await emit('message_start', { type: 'message_start', message: { usage: {} } });
 
   while (true) {
     const { done, value } = await reader.read();
@@ -734,18 +973,41 @@ async function parseAnthropicStream(response, handlers) {
     buffer = lines.pop() || '';
     for (const line of lines) {
       if (!line) {
-        await flushEvent();
-      } else if (line.startsWith('event:')) {
-        eventName = line.slice(6).trim();
+        await flushData();
       } else if (line.startsWith('data:')) {
         dataLines.push(line.slice(5).trimStart());
       }
     }
   }
-  if (buffer || dataLines.length) await flushEvent();
+  if (buffer || dataLines.length) await flushData();
+  if (textBlockStarted) await emit('content_block_stop', { type: 'content_block_stop', index: textBlockIndex });
+
+  const completeToolCalls = toolCalls.filter((toolCall) => toolCall?.name);
+  for (const toolCall of completeToolCalls) {
+    const index = nextBlockIndex;
+    nextBlockIndex += 1;
+    await emit('content_block_start', {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'tool_use', id: toolCall.id, name: toolCall.name, input: {} },
+    });
+    await emit('content_block_delta', {
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'input_json_delta', partial_json: toolCall.arguments || '{}' },
+    });
+    await emit('content_block_stop', { type: 'content_block_stop', index });
+  }
+
+  await emit('message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: completeToolCalls.length ? 'tool_use' : normalizeOpenAiFinishReason(finishReason) },
+    usage,
+  });
+  await emit('message_stop', { type: 'message_stop' });
 }
 
-function extractTextFromAnthropic(data) {
+function extractTextFromModelResponse(data) {
   return textFromContent(data.content).trim();
 }
 
@@ -756,12 +1018,12 @@ function buildMemoryPrompt(body) {
 async function handleChat(req, res, stream = false) {
   const rawBody = await readRequestBody(req);
   const body = rawBody ? JSON.parse(rawBody) : {};
-  const model = String(body.model || DEFAULT_MODEL);
+  const model = normalizeModelId(body.model || DEFAULT_MODEL);
   const storedState = await appStore.getAppState();
   const apiKeys = apiKeysFromRequest(body, model, storedState);
 
-  if (!apiKeys.length) {
-    sendJson(res, 400, { error: 'API key is unavailable. Add a key for this model in Settings or run the server with ANTHROPIC_API_KEY.' });
+  if (!apiKeys.length && !isLocalOpenAiEndpoint()) {
+    sendJson(res, 400, { error: 'API key is unavailable. Add a key for this model in Settings or run the server with OPENAI_API_KEY.' });
     return;
   }
 
@@ -799,7 +1061,7 @@ async function handleChat(req, res, stream = false) {
     const result = await runJsonAgentLoop({
       messages,
       maxLoops: MAX_TOOL_LOOPS,
-      callModel: (workingMessages) => callAnthropicJsonWithFallback({ apiKeys, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools }),
+      callModel: (workingMessages) => callOpenAiJsonWithFallback({ apiKeys, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools }),
       executeTool: (tool) => executeAtlassianTool(tool, { latestUserMessage: lastUserMessage }),
     });
     sendJson(res, 200, { text: result.text, usage: result.usage, model: result.model || model, stopReason: result.stopReason });
@@ -818,8 +1080,8 @@ async function handleChat(req, res, stream = false) {
       messages,
       maxLoops: MAX_TOOL_LOOPS,
       async streamModel(workingMessages, onEvent) {
-        const upstream = await callAnthropicStreamWithFallback({ apiKeys, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools });
-        await parseAnthropicStream(upstream, { onEvent: async (_name, event) => onEvent(event) });
+        const upstream = await callOpenAiStreamWithFallback({ apiKeys, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools });
+        await parseOpenAiStream(upstream, { onEvent: async (_name, event) => onEvent(event) });
       },
       executeTool: (tool) => executeAtlassianTool(tool, { latestUserMessage: lastUserMessage }),
       onText: (text) => sendSse(res, 'delta', { text }),
@@ -828,7 +1090,7 @@ async function handleChat(req, res, stream = false) {
     sendSse(res, 'done', { text: result.text, usage: result.usage, model, stopReason: result.stopReason });
     res.end();
   } catch (error) {
-    sendSse(res, 'error', { error: error.message || 'Claude API failed to respond.', details: error.details });
+    sendSse(res, 'error', { error: error.message || 'AI API failed to respond.', details: error.details });
     res.end();
   }
 }
@@ -836,10 +1098,10 @@ async function handleChat(req, res, stream = false) {
 async function handleMemory(req, res) {
   const rawBody = await readRequestBody(req);
   const body = rawBody ? JSON.parse(rawBody) : {};
-  const model = String(body.model || 'claude-haiku-4-5-20251001');
+  const model = normalizeModelId(body.model || MEMORY_MODEL);
   const storedState = await appStore.getAppState();
   const apiKeys = apiKeysFromRequest(body, model, storedState);
-  if (!apiKeys.length) {
+  if (!apiKeys.length && !isLocalOpenAiEndpoint()) {
     sendJson(res, 400, { error: 'API key is unavailable for memory.' });
     return;
   }
@@ -849,14 +1111,14 @@ async function handleMemory(req, res) {
     return;
   }
   try {
-    const data = await callAnthropicJsonWithFallback({
+    const data = await callOpenAiJsonWithFallback({
       apiKeys,
       model,
       maxTokens: Number(body.maxTokens || 700),
       system: 'You maintain durable Claude-style memory. Follow scope boundaries and output-format requirements exactly.',
       messages: [{ role: 'user', content: buildMemoryPrompt(body) }],
     });
-    const memory = extractTextFromAnthropic(data);
+    const memory = extractTextFromModelResponse(data);
     const validation = validateMemoryDocument(memory, body.scope);
     if (!validation.valid) {
       sendJson(res, 502, { error: 'The model returned an invalid memory format; the previous memory was kept.', reason: validation.reason });
@@ -871,13 +1133,7 @@ async function handleMemory(req, res) {
 async function handleCountTokens(req, res) {
   const rawBody = await readRequestBody(req);
   const body = rawBody ? JSON.parse(rawBody) : {};
-  const model = String(body.model || DEFAULT_MODEL);
-  const storedState = await appStore.getAppState();
-  const apiKeys = apiKeysFromRequest(body, model, storedState);
-  if (!apiKeys.length) {
-    sendJson(res, 400, { error: 'API key is unavailable for count_tokens.' });
-    return;
-  }
+  const model = normalizeModelId(body.model || DEFAULT_MODEL);
   const messages = normalizeMessages(body.messages);
   const storedProjectFiles = body.project?.id
     ? await fileStore.readSelected(body.project.fileIds, 'project', body.project.id)
@@ -901,7 +1157,7 @@ async function handleCountTokens(req, res) {
     explicitToolsRequested: toolSelection.explicit,
   });
   try {
-    const data = await callAnthropicCountTokens({ apiKeys, model, system, messages, tools: toolSelection.tools });
+    const data = callOpenAiCountTokens({ model, system, messages, tools: toolSelection.tools });
     sendJson(res, 200, data);
   } catch (error) {
     sendJson(res, error.status || 500, { error: error.message || 'Token counting failed.', details: error.details });
@@ -941,12 +1197,14 @@ const server = http.createServer((req, res) => {
         hasServerApiKey: hasServerApiKeys(storedState),
         serverApiKeyModels: Object.fromEntries(MODEL_KEY_FAMILIES.map((family) => [
           family.id,
-          Boolean(
-            splitApiKeys(process.env[`${family.envPrefix}_API_KEYS`]).length
-            || splitApiKeys(process.env[`${family.envPrefix}_API_KEY`]).length
-            || storedApiKeysForModel(storedState, family.id).length
-          ),
+          Boolean(isLocalOpenAiEndpoint()
+            || (family.envPrefixes || []).some((prefix) => (
+              splitApiKeys(process.env[`${prefix}_API_KEYS`]).length
+              || splitApiKeys(process.env[`${prefix}_API_KEY`]).length
+            ))
+            || storedApiKeysForModel(storedState, family.id).length),
         ])),
+        openAiBaseUrl: OPENAI_BASE_URL,
         atlassianConfigured: isAtlassianConfigured(),
         tools: isAtlassianConfigured() ? atlassianTools().map((tool) => tool.name) : [],
       }))
@@ -1032,16 +1290,17 @@ module.exports = {
   atlassianTools,
   isAtlassianConfigured,
   executeAtlassianTool,
-  parseAnthropicStream,
+  normalizeModelId,
+  parseOpenAiStream,
   truncateToolResult,
-  fetchAnthropic,
+  fetchOpenAi,
   splitApiKeys,
   modelKeyFamily,
   apiKeysFromRequest,
   envApiKeysForModel,
-  withAnthropicApiKeyFallback,
-  callAnthropicJsonWithFallback,
-  callAnthropicCountTokens,
+  withOpenAiApiKeyFallback,
+  callOpenAiJsonWithFallback,
+  callOpenAiCountTokens,
   normalizeAtlassianBaseUrl,
   publicAtlassianStatus,
   testAtlassianConnection,

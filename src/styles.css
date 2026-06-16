@@ -5366,3 +5366,1366 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Browser Claude scale correction */
+:root {
+  --sidebar-width: clamp(300px, 22.5vw, 432px);
+  --window-bar-height: 0px;
+}
+
+.app-window {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #fff;
+}
+
+.window-bar {
+  display: none;
+}
+
+.app-body {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  width: 100%;
+  height: 100vh;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #fff;
+}
+
+.app-body:has(.app-sidebar.collapsed) {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.app-sidebar {
+  width: 100%;
+  min-width: 0;
+  height: 100vh;
+  padding: 22px 24px 16px;
+  border: 0;
+  border-right: 1px solid #ddd9d2;
+  border-radius: 0;
+  background: #fbfaf8;
+  box-shadow: none;
+}
+
+.app-sidebar::before {
+  content: "Claude";
+  display: block;
+  margin-bottom: 34px;
+  color: #141312;
+  font-family: Newsreader, Georgia, serif;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.app-sidebar.collapsed {
+  width: 72px;
+  padding-inline: 12px;
+}
+
+.app-sidebar.collapsed::before {
+  content: "";
+  margin: 0;
+}
+
+.product-tabs {
+  display: none;
+}
+
+.sidebar-primary {
+  gap: 6px;
+  padding: 0;
+}
+
+.new-chat-button,
+.sidebar-link {
+  min-height: 38px;
+  padding: 0;
+  border-radius: 8px;
+  color: #3f3d39;
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.new-chat-button:hover,
+.sidebar-link:hover,
+.sidebar-link.active {
+  background: transparent;
+  color: #171615;
+}
+
+.new-chat-button .ph,
+.sidebar-link .ph {
+  width: 32px;
+  color: #22211f;
+  font-size: 24px;
+}
+
+.recent-section {
+  padding: 34px 0 0;
+}
+
+.recent-section > p {
+  margin: 0 0 14px;
+  color: #8c8982;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.recent-list {
+  padding-right: 6px;
+}
+
+.recent-link {
+  min-height: 34px;
+  padding: 5px 0;
+  border-radius: 0;
+  color: #3e3d39;
+  font-size: 19px;
+  line-height: 1.25;
+}
+
+.recent-link:hover,
+.recent-link.active {
+  background: transparent;
+  color: #111;
+}
+
+.sidebar-footer {
+  padding-top: 14px;
+  border-top: 1px solid #e7e3dc;
+}
+
+.profile-button {
+  min-height: 48px;
+  padding: 0;
+}
+
+.profile-avatar {
+  width: 48px;
+  height: 48px;
+  background: #3a3a36;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.profile-copy strong {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.profile-copy {
+  color: #89867f;
+  font-size: 15px;
+}
+
+.chat-view,
+.page-view,
+.project-detail-view,
+.customize-view,
+.artifacts-view {
+  height: 100vh;
+  min-height: 0;
+  overflow-y: auto;
+  background: #fff;
+}
+
+.chat-content {
+  width: min(1012px, calc(100% - 96px));
+  min-height: 100vh;
+}
+
+.chat-content.empty-mode {
+  justify-content: center;
+  padding: 0 0 72px;
+}
+
+.greeting {
+  gap: 18px;
+  margin-bottom: 58px;
+}
+
+.greeting h1 {
+  font-size: clamp(42px, 3.35vw, 64px);
+  line-height: 1.08;
+  letter-spacing: -0.015em;
+}
+
+.greeting-mark {
+  width: 54px;
+  height: 54px;
+}
+
+.composer {
+  min-height: 152px;
+  border-radius: 28px;
+  box-shadow: 0 16px 36px rgb(31 29 25 / 5%);
+}
+
+.composer textarea {
+  min-height: 146px;
+  padding: 28px 32px 72px;
+  font-size: 24px;
+}
+
+.composer-controls {
+  right: 28px;
+  bottom: 22px;
+  left: 28px;
+}
+
+.composer select {
+  max-width: 170px;
+  font-size: 20px;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+}
+
+.chat-send {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+}
+
+.suggestion-chips {
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.suggestion-chips button {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 20px;
+}
+
+.page-view {
+  padding: clamp(48px, 8vh, 84px) clamp(52px, 6.2vw, 120px) 72px;
+}
+
+.page-heading,
+.search-field,
+.project-grid {
+  width: min(100%, 1250px);
+}
+
+.page-heading {
+  margin-bottom: 32px;
+}
+
+.page-heading h1 {
+  font-size: clamp(34px, 2.25vw, 42px);
+  line-height: 1.15;
+}
+
+.sort-button,
+.primary-dark {
+  min-height: 48px;
+  font-size: 20px;
+}
+
+.search-field {
+  min-height: 64px;
+  margin-bottom: 40px;
+  padding-inline: 22px;
+}
+
+.search-field input {
+  font-size: 22px;
+}
+
+.project-grid {
+  gap: 28px 36px;
+}
+
+.project-card {
+  min-height: 200px;
+  padding: 28px 24px;
+}
+
+.project-card strong {
+  margin-bottom: 24px;
+  font-size: 21px;
+}
+
+.project-card p {
+  font-size: 20px;
+  line-height: 1.35;
+  -webkit-line-clamp: 3;
+}
+
+.project-card small {
+  font-size: 18px;
+}
+
+.project-detail-view {
+  padding: 0 clamp(48px, 5vw, 92px) 72px;
+}
+
+.project-detail-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 474px);
+  gap: clamp(40px, 5vw, 72px);
+  max-width: 1340px;
+  margin: 18px auto 0;
+}
+
+.project-title-row {
+  margin: 24px 0 36px;
+}
+
+.project-title-row h1 {
+  font-size: clamp(38px, 2.55vw, 48px);
+}
+
+.project-title-copy p {
+  font-size: 21px;
+}
+
+.project-composer {
+  min-height: 154px;
+  margin-bottom: 28px;
+}
+
+.project-history-item {
+  padding: 18px 18px;
+}
+
+.project-history-item strong {
+  font-size: 21px;
+}
+
+.project-history-item small {
+  font-size: 18px;
+}
+
+.project-context-column {
+  max-height: none;
+  padding-top: 0;
+}
+
+.context-card {
+  padding: 28px 32px;
+}
+
+.context-card-heading h2 {
+  font-size: 22px;
+}
+
+.context-card > p,
+.context-card .italic {
+  font-size: 19px;
+}
+
+.context-card small {
+  font-size: 17px;
+}
+
+.customize-view,
+.artifacts-view {
+  overflow: auto;
+}
+
+.customize-header {
+  min-height: 72px;
+  padding: 0 32px;
+}
+
+.customize-header h1 {
+  font-size: 24px;
+}
+
+.customize-layout {
+  min-height: calc(100vh - 72px);
+}
+
+@media (max-width: 1450px) {
+  .project-detail-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .project-context-column {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  :root {
+    --sidebar-width: 300px;
+  }
+
+  .chat-content {
+    width: min(850px, calc(100% - 56px));
+  }
+
+  .page-view {
+    padding-top: 48px;
+  }
+
+  .composer textarea {
+    font-size: 21px;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-body {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .app-sidebar {
+    width: 72px;
+    min-width: 72px;
+    padding-inline: 12px;
+  }
+
+  .sidebar-primary {
+    padding-top: 20px;
+  }
+
+  .chat-content {
+    width: min(100% - 24px, 680px);
+  }
+
+  .greeting h1 {
+    font-size: 34px;
+  }
+
+  .composer {
+    min-height: 128px;
+  }
+
+  .composer textarea {
+    min-height: 122px;
+    padding: 22px 18px 66px;
+    font-size: 18px;
+  }
+}
+
+/* Compact pass: match Claude browser scale more closely */
+:root {
+  --sidebar-width: clamp(300px, 22.4vw, 432px);
+}
+
+.app-sidebar {
+  padding: 22px 24px 16px;
+}
+
+.app-sidebar::before {
+  margin-bottom: 32px;
+  font-size: 28px;
+}
+
+.new-chat-button,
+.sidebar-link {
+  min-height: 34px;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.new-chat-button .ph,
+.sidebar-link .ph {
+  width: 30px;
+  font-size: 22px;
+}
+
+.recent-section {
+  padding-top: 30px;
+}
+
+.recent-section > p {
+  margin-bottom: 12px;
+  font-size: 15px;
+}
+
+.recent-link {
+  min-height: 30px;
+  padding: 4px 0;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.profile-button {
+  min-height: 42px;
+}
+
+.profile-avatar {
+  width: 38px;
+  height: 38px;
+  font-size: 18px;
+}
+
+.profile-copy strong {
+  font-size: 16px;
+}
+
+.profile-copy {
+  font-size: 13px;
+}
+
+.chat-content {
+  width: min(1012px, calc(100% - 96px));
+}
+
+.chat-content.empty-mode {
+  padding-bottom: 70px;
+}
+
+.greeting {
+  margin-bottom: 54px;
+}
+
+.greeting h1 {
+  font-size: clamp(42px, 3.05vw, 58px);
+}
+
+.greeting-mark {
+  width: 48px;
+  height: 48px;
+}
+
+.chat-content.conversation-mode {
+  padding: 54px 0 20px;
+}
+
+.conversation-header {
+  margin-bottom: 18px;
+}
+
+.conversation-header h1 {
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.secondary-button,
+.card-actions button,
+.editor-actions button,
+.artifact-detail-heading button,
+.settings-save-row button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.messages {
+  gap: 22px;
+  max-height: calc(100vh - 300px);
+  margin-bottom: 18px;
+}
+
+.message {
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.message.user {
+  grid-template-columns: minmax(0, 1fr) 30px;
+}
+
+.message-avatar {
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+}
+
+.message-mark {
+  width: 22px;
+  height: 22px;
+}
+
+.message-body {
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.message.user .message-body {
+  padding: 10px 14px;
+  border-radius: 16px;
+}
+
+.branch-message {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.composer {
+  min-height: 124px;
+  border-radius: 24px;
+  box-shadow: 0 12px 28px rgb(31 29 25 / 5%);
+}
+
+.composer textarea {
+  min-height: 118px;
+  padding: 22px 28px 58px;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.composer-controls {
+  right: 24px;
+  bottom: 16px;
+  left: 24px;
+}
+
+.composer-options {
+  gap: 8px;
+}
+
+.composer select {
+  max-width: 138px;
+  font-size: 16px;
+}
+
+.composer select + select {
+  max-width: 90px;
+}
+
+.icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.icon-button .ph,
+.send-button .ph {
+  font-size: 20px;
+}
+
+.chat-send {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  border-radius: 9px;
+}
+
+.suggestion-chips {
+  margin-top: 22px;
+}
+
+.suggestion-chips button {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 16px;
+}
+
+.page-view {
+  padding: 44px clamp(48px, 5.6vw, 108px) 56px;
+}
+
+.page-heading h1 {
+  font-size: 32px;
+}
+
+.sort-button,
+.primary-dark {
+  min-height: 40px;
+  font-size: 16px;
+}
+
+.search-field {
+  min-height: 52px;
+  margin-bottom: 32px;
+  padding-inline: 18px;
+}
+
+.search-field input {
+  font-size: 18px;
+}
+
+.project-card {
+  min-height: 170px;
+  padding: 22px;
+}
+
+.project-card strong {
+  margin-bottom: 16px;
+  font-size: 18px;
+}
+
+.project-card p {
+  font-size: 16px;
+}
+
+.project-card small {
+  font-size: 15px;
+}
+
+.project-title-row h1 {
+  font-size: 34px;
+}
+
+.project-title-copy p {
+  font-size: 17px;
+}
+
+.project-composer {
+  min-height: 124px;
+}
+
+.project-history-item strong {
+  font-size: 17px;
+}
+
+.project-history-item small,
+.context-card small {
+  font-size: 14px;
+}
+
+.context-card {
+  padding: 22px 24px;
+}
+
+.context-card-heading h2 {
+  font-size: 18px;
+}
+
+.context-card > p,
+.context-card .italic {
+  font-size: 16px;
+}
+
+/* Stitch scale alignment: compact browser layout sizing. */
+:root {
+  --sidebar-width: 256px;
+}
+
+.app-sidebar {
+  padding: 20px 16px 14px;
+  border-right-color: #e5e5e2;
+  background: #fff;
+}
+
+.app-sidebar::before {
+  margin-bottom: 28px;
+  font-size: 28px;
+  letter-spacing: 0;
+}
+
+.sidebar-primary {
+  gap: 4px;
+}
+
+.new-chat-button,
+.sidebar-link {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.new-chat-button .ph,
+.sidebar-link .ph {
+  width: 24px;
+  font-size: 20px;
+}
+
+.recent-section {
+  padding-top: 28px;
+}
+
+.recent-section > p {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.recent-list {
+  padding-right: 0;
+}
+
+.recent-link {
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.sidebar-footer {
+  padding-top: 12px;
+}
+
+.profile-button {
+  min-height: 38px;
+  padding: 4px 6px;
+  border-radius: 8px;
+}
+
+.profile-avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 16px;
+}
+
+.profile-copy strong {
+  font-size: 14px;
+}
+
+.profile-copy {
+  font-size: 12px;
+}
+
+.chat-view,
+.page-view,
+.project-detail-view,
+.customize-view,
+.artifacts-view {
+  background: #faf9f8;
+}
+
+.chat-content {
+  width: min(768px, calc(100% - 64px));
+}
+
+.chat-content.empty-mode {
+  padding: 20px 0 48px;
+}
+
+.greeting {
+  gap: 14px;
+  margin-bottom: 36px;
+}
+
+.greeting h1 {
+  font-size: 36px;
+  line-height: 1.14;
+  letter-spacing: 0;
+}
+
+.greeting-mark {
+  width: 42px;
+  height: 42px;
+}
+
+.chat-content.conversation-mode {
+  padding: 42px 0 18px;
+}
+
+.conversation-header {
+  margin-bottom: 16px;
+}
+
+.conversation-header h1 {
+  font-size: 26px;
+  line-height: 1.22;
+  letter-spacing: 0;
+}
+
+.messages {
+  max-height: calc(100vh - 270px);
+  gap: 20px;
+}
+
+.composer {
+  min-height: 124px;
+  border-radius: 16px;
+  border-color: #e5e5e2;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(31 29 25 / 5%);
+}
+
+.composer textarea {
+  min-height: 118px;
+  padding: 16px 16px 50px;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.composer-controls {
+  right: 16px;
+  bottom: 14px;
+  left: 16px;
+}
+
+.composer-options {
+  gap: 8px;
+}
+
+.composer select {
+  max-width: 128px;
+  font-size: 14px;
+}
+
+.composer select + select {
+  max-width: 84px;
+}
+
+.icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.icon-button .ph,
+.send-button .ph {
+  font-size: 20px;
+}
+
+.chat-send {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+
+.suggestion-chips {
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.suggestion-chips button {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 14px;
+}
+
+.page-view {
+  padding: 40px 56px 56px;
+}
+
+.page-heading,
+.search-field,
+.project-grid {
+  width: min(100%, 1120px);
+}
+
+.page-heading {
+  margin-bottom: 28px;
+}
+
+.page-heading h1 {
+  font-size: 30px;
+  line-height: 1.18;
+  letter-spacing: 0;
+}
+
+.sort-button,
+.primary-dark {
+  min-height: 38px;
+  padding-inline: 14px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.search-field {
+  min-height: 48px;
+  margin-bottom: 28px;
+  padding-inline: 16px;
+  border-radius: 12px;
+}
+
+.search-field input {
+  font-size: 16px;
+}
+
+.project-grid {
+  gap: 22px;
+}
+
+.project-card {
+  min-height: 156px;
+  padding: 20px;
+  border-radius: 10px;
+}
+
+.project-card strong {
+  margin-bottom: 14px;
+  font-size: 16px;
+}
+
+.project-card p {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.project-card small {
+  font-size: 13px;
+}
+
+.project-detail-view {
+  padding: 40px 48px 56px;
+}
+
+.project-detail-layout {
+  grid-template-columns: minmax(0, 768px) minmax(300px, 360px);
+  gap: 40px;
+}
+
+.project-title-row h1 {
+  font-size: 32px;
+  line-height: 1.16;
+  letter-spacing: 0;
+}
+
+.project-title-copy p {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.project-composer {
+  min-height: 124px;
+}
+
+.project-history-item strong {
+  font-size: 16px;
+}
+
+.project-history-item small,
+.context-card small {
+  font-size: 13px;
+}
+
+.context-card {
+  padding: 20px;
+  border-radius: 14px;
+}
+
+.context-card-heading h2 {
+  font-size: 16px;
+}
+
+.context-card > p,
+.context-card .italic {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.settings-modal {
+  width: min(980px, calc(100vw - 96px));
+  height: min(720px, calc(100vh - 72px));
+}
+
+.settings-nav {
+  width: 260px;
+}
+
+.settings-content,
+.settings-placeholder {
+  padding: 32px 40px;
+}
+
+.settings-content > h2,
+.settings-placeholder h2 {
+  font-size: 28px;
+  letter-spacing: 0;
+}
+
+@media (max-width: 860px) {
+  :root {
+    --sidebar-width: 72px;
+  }
+
+  .app-sidebar {
+    padding-inline: 12px;
+  }
+
+  .app-sidebar::before {
+    display: none;
+  }
+
+  .chat-content {
+    width: min(100% - 32px, 768px);
+  }
+
+  .greeting h1 {
+    font-size: 30px;
+  }
+
+  .project-detail-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Session list actions */
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: visible;
+}
+
+.recent-item {
+  position: relative;
+  min-width: 0;
+}
+
+.recent-item.active {
+  z-index: 2;
+}
+
+.recent-item.menu-open {
+  z-index: 40;
+}
+
+.recent-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding-right: 34px;
+  text-align: left;
+}
+
+.recent-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-item.active .recent-link {
+  background: #f0efec;
+  color: #171615;
+  font-weight: 500;
+}
+
+.recent-item.active .recent-link::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 999px;
+  background: #d2704f;
+}
+
+.recent-project-marker {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.recent-project-marker .ph {
+  font-size: 15px;
+}
+
+.recent-menu-trigger {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: #66645f;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.recent-item:hover .recent-menu-trigger,
+.recent-item:focus-within .recent-menu-trigger,
+.recent-item.menu-open .recent-menu-trigger {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.recent-menu-trigger:hover,
+.recent-menu-trigger:focus-visible {
+  background: #e7e5df;
+  color: #171615;
+}
+
+.recent-menu-trigger .ph {
+  font-size: 18px;
+}
+
+.recent-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 4px;
+  left: 4px;
+  z-index: 50;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #dfddd7;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgb(31 29 25 / 13%);
+}
+
+.recent-menu > button,
+.conversation-project-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: #2f2e2a;
+  font-size: 13px;
+  text-align: left;
+}
+
+.recent-menu > button:hover,
+.recent-menu > button:focus-visible,
+.conversation-project-option:hover,
+.conversation-project-option:focus-visible {
+  background: #f2f1ed;
+}
+
+.recent-menu > button .ph,
+.conversation-project-option .ph {
+  flex: 0 0 auto;
+  font-size: 16px;
+}
+
+.recent-menu > button.danger {
+  color: #b42318;
+}
+
+.recent-menu > button.danger:hover,
+.recent-menu > button.danger:focus-visible {
+  background: #fff1f1;
+}
+
+.conversation-menu-section {
+  display: grid;
+  gap: 4px;
+  padding: 4px 0;
+  border-top: 1px solid #eeeae4;
+  border-bottom: 1px solid #eeeae4;
+}
+
+.conversation-menu-section p {
+  margin: 0;
+  padding: 2px 8px;
+  color: #7a776f;
+  font-size: 12px;
+}
+
+.conversation-project-list {
+  display: grid;
+  gap: 2px;
+  max-height: 150px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.conversation-project-option {
+  justify-content: space-between;
+}
+
+.conversation-project-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-project-option.active {
+  background: #f4f1ea;
+  color: #171615;
+  font-weight: 500;
+}
+
+.conversation-rename-field {
+  display: grid;
+  gap: 5px;
+  padding: 4px;
+}
+
+.conversation-rename-field span {
+  color: #7a776f;
+  font-size: 12px;
+}
+
+.conversation-rename-field input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d8d5ce;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.conversation-rename-field input:focus {
+  border-color: #d2704f;
+  box-shadow: 0 0 0 3px rgb(210 112 79 / 15%);
+}
+
+.conversation-rename-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 0 4px 4px;
+}
+
+.conversation-rename-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: #4a4842;
+  font-size: 13px;
+}
+
+.conversation-rename-actions button:hover,
+.conversation-rename-actions button:focus-visible {
+  background: #f2f1ed;
+}
+
+.conversation-rename-actions .primary {
+  background: #171615;
+  color: #fff;
+}
+
+.conversation-rename-actions .primary:hover,
+.conversation-rename-actions .primary:focus-visible {
+  background: #302f2c;
+}
+
+.conversation-delete-confirm {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px 4px;
+}
+
+.conversation-delete-confirm strong {
+  color: #2f2e2a;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.conversation-delete-confirm p {
+  margin: 0;
+  color: #7a776f;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.conversation-rename-actions .danger-confirm {
+  background: #b42318;
+  color: #fff;
+}
+
+.conversation-rename-actions .danger-confirm:hover,
+.conversation-rename-actions .danger-confirm:focus-visible {
+  background: #991b1b;
+}
+
+.app-sidebar.collapsed .recent-menu,
+.app-sidebar.collapsed .recent-menu-trigger,
+.app-sidebar.collapsed .recent-project-marker {
+  display: none;
+}
