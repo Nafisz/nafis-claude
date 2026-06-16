@@ -9,6 +9,13 @@ const PROJECT_FILE_EXTENSIONS = new Set(['md', 'txt', 'json', 'csv', 'js', 'jsx'
 const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
 const MEMORY_MODEL_ID = 'claude-haiku-4-5-20251001';
 const MEMORY_SECTION_TITLES = [
+  'Work context',
+  'Personal context',
+  'Top of mind',
+  'Brief history',
+  'Recent months',
+  'Earlier context',
+  'Long-term background',
   'Purpose & context',
   'Current state',
   'On the horizon',
@@ -199,6 +206,8 @@ const initialState = {
   conversationFileError: '',
   memoryModalScope: null,
   memoryModalEditing: false,
+  memoryEditDraft: '',
+  memoryModalError: '',
   isSending: false,
   isMemoryUpdating: false,
   streamingMessageId: null,
@@ -273,7 +282,7 @@ function normalizePersistedState(stored = {}) {
       customizeSection: stored.customizeSection === 'connectors' ? 'connectors' : 'skills',
       view: ['chat', 'projects', 'project', 'customize', 'artifacts'].includes(stored.view) ? stored.view : 'chat',
       settingsOpen: false,
-      settingsSection: stored.settingsSection || 'general',
+      settingsSection: 'general',
       sidebarCollapsed: Boolean(stored.sidebarCollapsed),
       profile: { ...initialState.profile, ...(stored.profile || {}) },
       customProjects: stored.customProjects || [],
@@ -308,6 +317,8 @@ function normalizePersistedState(stored = {}) {
       conversationFileError: '',
       memoryModalScope: null,
       memoryModalEditing: false,
+      memoryEditDraft: '',
+      memoryModalError: '',
     };
 }
 
@@ -389,6 +400,10 @@ function buildPersistedState() {
     projectFileError,
     selectedProjectFileIds,
     conversationFileError,
+    memoryModalScope,
+    memoryModalEditing,
+    memoryEditDraft,
+    memoryModalError,
     ...persistableState
   } = state;
   const persisted = {
@@ -798,16 +813,18 @@ function shouldSummarizeSession(messages = currentMessages(), conversationId = s
 async function requestMemory(scope, existingMemory, context) {
   const model = MEMORY_MODEL_ID;
   await flushStateSave();
+  const maxTokens = scope === 'session' ? 900 : scope === 'global' ? 2600 : 1800;
   const response = await fetch('/api/memory', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       apiKeysByModel: apiKeysForRequest(model),
       model,
-      maxTokens: scope === 'session' ? 900 : 1800,
+      maxTokens,
       scope,
       existingMemory,
       project: context.project,
+      instruction: context.instruction || '',
       messages: context.messages,
     }),
   });
@@ -1693,16 +1710,6 @@ function saveSettings() {
   render();
 }
 
-function projectMemoryMarkdown() {
-  const project = activeMemory();
-  if (!project) return '';
-  return `# Project memory: ${project.name}\n\n${generatedProjectMemory(project.id) || project.memory || '-'}`;
-}
-
-function globalMemoryMarkdown() {
-  return `# Global memory\n\n${state.globalMemory || '-'}`;
-}
-
 function memoryModalProject() {
   return projectById(state.activeProject) || projectById(currentConversation()?.projectId);
 }
@@ -1716,6 +1723,8 @@ function memoryModalContent() {
 function openMemoryModal(scope) {
   state.memoryModalScope = scope;
   state.memoryModalEditing = false;
+  state.memoryEditDraft = '';
+  state.memoryModalError = '';
   saveState();
   render();
 }
@@ -1723,34 +1732,65 @@ function openMemoryModal(scope) {
 function closeMemoryModal() {
   state.memoryModalScope = null;
   state.memoryModalEditing = false;
+  state.memoryEditDraft = '';
+  state.memoryModalError = '';
   saveState();
   render();
 }
 
 function startMemoryModalEditing() {
   state.memoryModalEditing = true;
+  state.memoryEditDraft = '';
+  state.memoryModalError = '';
   render();
-  document.querySelector('#memory-modal-editor')?.focus();
+  document.querySelector('#memory-edit-input')?.focus();
 }
 
-function saveMemoryModal() {
-  const value = document.querySelector('#memory-modal-editor')?.value.trim() || '';
-  const now = new Date().toISOString();
-  if (state.memoryModalScope === 'global') {
-    state.globalMemory = value;
-    state.memoryUpdatedAt = { ...state.memoryUpdatedAt, global: now };
-  } else {
-    const project = memoryModalProject();
-    if (!project) return;
-    state.projectMemories = { ...state.projectMemories, [project.id]: value };
-    state.memoryUpdatedAt = {
-      ...state.memoryUpdatedAt,
-      projects: { ...(state.memoryUpdatedAt?.projects || {}), [project.id]: now },
-    };
-  }
-  state.memoryModalEditing = false;
+function syncMemoryEditSubmitState() {
+  const input = document.querySelector('#memory-edit-input');
+  const button = document.querySelector('[data-action="submit-memory-edit"]');
+  if (!input || !button) return;
+  button.disabled = !input.value.trim() || state.isMemoryUpdating;
+}
+
+async function submitMemoryEdit() {
+  const scope = state.memoryModalScope;
+  const instruction = document.querySelector('#memory-edit-input')?.value.trim() || state.memoryEditDraft.trim();
+  if (!scope || !instruction || state.isMemoryUpdating) return;
+
+  state.memoryEditDraft = instruction;
+  state.memoryModalError = '';
+  state.isMemoryUpdating = true;
   saveState();
   render();
+
+  const project = scope === 'project' ? memoryModalProject() : null;
+  try {
+    const memory = await requestMemory(scope, memoryModalContent(), {
+      instruction,
+      project: project ? combineProjectMemory(project) : null,
+      messages: buildContextMessages(),
+    });
+    const now = new Date().toISOString();
+    if (scope === 'global') {
+      state.globalMemory = memory;
+      state.memoryUpdatedAt = { ...state.memoryUpdatedAt, global: now };
+    } else if (project) {
+      state.projectMemories = { ...state.projectMemories, [project.id]: memory };
+      state.memoryUpdatedAt = {
+        ...state.memoryUpdatedAt,
+        projects: { ...(state.memoryUpdatedAt?.projects || {}), [project.id]: now },
+      };
+    }
+    state.memoryModalEditing = false;
+    state.memoryEditDraft = '';
+  } catch (error) {
+    state.memoryModalError = error.message || 'Failed to update memory.';
+  } finally {
+    state.isMemoryUpdating = false;
+    saveState();
+    render();
+  }
 }
 
 function parseMemoryForDisplay(memory = '') {
@@ -1763,7 +1803,7 @@ function parseMemoryForDisplay(memory = '') {
   return matches.map((match, index) => ({
     heading: match[1],
     content: text.slice(match.index + match[0].length, matches[index + 1]?.index ?? text.length).trim(),
-  })).filter((section) => section.content);
+  }));
 }
 
 function renderMemoryDocument(memory) {
@@ -1771,9 +1811,12 @@ function renderMemoryDocument(memory) {
   if (!sections.length) return '<p class="memory-empty">No memory yet.</p>';
   return sections.map((section) => {
     const paragraphs = section.content
-      .split(/\n\s*\n/)
-      .map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll('\n', '<br />')}</p>`)
-      .join('');
+      ? section.content
+        .split(/\n\s*\n/)
+        .filter((paragraph) => paragraph.trim())
+        .map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll('\n', '<br />')}</p>`)
+        .join('')
+      : '';
     return `<section>${section.heading ? `<h3>${escapeHtml(section.heading)}</h3>` : ''}${paragraphs}</section>`;
   }).join('');
 }
@@ -1831,7 +1874,6 @@ function renderSidebar() {
           <span class="profile-copy"><strong>${escapeHtml(state.profile.callName)}</strong></span>
           ${phIcon('caret-down')}
         </button>
-        <button class="sidebar-download" data-action="download-global-memory" aria-label="Download global memory">${phIcon('download-simple')}</button>
       </div>
     </aside>
   `;
@@ -2416,25 +2458,6 @@ function renderApiKeySettings() {
 }
 
 function renderSettingsContent() {
-  if (state.settingsSection !== 'general') {
-    const labels = {
-      account: 'Account',
-      privacy: 'Privacy',
-      billing: 'Billing',
-      capabilities: 'Capabilities',
-      connectors: 'Connectors',
-      code: 'Claude Code',
-      desktop: 'Desktop app',
-      extensions: 'Extensions',
-      developer: 'Developer',
-    };
-    return `
-      <section class="settings-placeholder">
-        <h2>${labels[state.settingsSection] || 'Settings'}</h2>
-        <p>This setting does not need additional configuration in the local workspace yet.</p>
-      </section>
-    `;
-  }
   return `
     <section class="settings-content">
       <h2>Profile</h2>
@@ -2458,8 +2481,6 @@ function renderSettingsContent() {
       </div>
       <div class="settings-save-row">
         <button data-action="save-settings" class="primary-dark">Save changes</button>
-        <button data-action="copy-global-memory">Copy memory</button>
-        <button data-action="download-global-memory">Download</button>
       </div>
     </section>
   `;
@@ -2469,12 +2490,6 @@ function renderSettingsModal() {
   if (!state.settingsOpen) return '';
   const items = [
     ['general', 'settings', 'General'],
-    ['account', 'person', 'Account'],
-    ['privacy', 'shield', 'Privacy'],
-    ['billing', 'credit_card', 'Billing'],
-    ['capabilities', 'work', 'Capabilities'],
-    ['connectors', 'cable', 'Connectors'],
-    ['code', 'code', 'Claude Code'],
   ];
   return `
     <div class="settings-backdrop">
@@ -2497,9 +2512,9 @@ function renderMemoryModal() {
   if (!state.memoryModalScope) return '';
   const project = memoryModalProject();
   const isGlobal = state.memoryModalScope === 'global';
-  const title = isGlobal ? 'Manage global memory' : 'Manage project memory';
+  const title = isGlobal ? 'Manage memory' : 'Manage project memory';
   const description = isGlobal
-    ? 'Claude regenerates global memory from your past chats. It keeps durable preferences and context that can be used across projects.'
+    ? 'Here is what Claude remembers about you. This summary is regenerated each night and does not include projects, which have their own specific memory.'
     : `Claude regenerates project memory every evening from your past chats in this project. Only you can see this memory, and it is not shared with other project users.`;
   const memory = memoryModalContent();
   return `
@@ -2510,18 +2525,19 @@ function renderMemoryModal() {
           <button data-action="close-memory-modal" aria-label="Close memory">${icon('close')}</button>
         </header>
         <p class="memory-modal-description">${description}</p>
-        <div class="memory-document-frame ${state.memoryModalEditing ? 'editing' : ''}">
-          ${state.memoryModalEditing
-            ? `<textarea id="memory-modal-editor" aria-label="${isGlobal ? 'Global memory editor' : 'Project memory editor'}">${escapeHtml(memory)}</textarea>`
-            : `<article class="memory-document">${renderMemoryDocument(memory)}</article>`}
+        <div class="memory-document-frame ${state.memoryModalEditing ? 'editing-request' : ''}">
+          <article class="memory-document">${renderMemoryDocument(memory)}</article>
           ${state.memoryModalEditing ? '' : `<button class="memory-edit-fab" data-action="edit-memory-modal" aria-label="Edit ${isGlobal ? 'global' : 'project'} memory">${phIcon('pencil-simple')}</button>`}
+          ${state.memoryModalEditing ? `
+            <div class="memory-instruction-composer">
+              <textarea id="memory-edit-input" rows="1" placeholder="Tell Claude what to remember or forget..." aria-label="Tell Claude what to remember or forget">${escapeHtml(state.memoryEditDraft || '')}</textarea>
+              <button data-action="submit-memory-edit" aria-label="Submit memory update" ${state.isMemoryUpdating || !state.memoryEditDraft ? 'disabled' : ''}>
+                ${state.isMemoryUpdating ? phIcon('spinner-gap', 'spin') : phIcon('arrow-right')}
+              </button>
+            </div>
+          ` : ''}
         </div>
-        ${state.memoryModalEditing ? `
-          <footer class="memory-modal-actions">
-            <button data-action="cancel-memory-modal-edit">Cancel</button>
-            <button data-action="save-memory-modal" class="primary-dark">Save</button>
-          </footer>
-        ` : ''}
+        ${state.memoryModalError ? `<div class="memory-modal-error">${phIcon('warning-circle')}<span>${escapeHtml(state.memoryModalError)}</span></div>` : ''}
         ${!isGlobal && project ? `<span class="memory-modal-project-name">${escapeHtml(project.name)}</span>` : ''}
       </section>
     </div>
@@ -2812,15 +2828,11 @@ function handleClick(event) {
   if (action === 'open-global-memory') openMemoryModal('global');
   if (action === 'close-memory-modal') closeMemoryModal();
   if (action === 'edit-memory-modal') startMemoryModalEditing();
-  if (action === 'cancel-memory-modal-edit') setState({ memoryModalEditing: false });
-  if (action === 'save-memory-modal') saveMemoryModal();
+  if (action === 'submit-memory-edit') submitMemoryEdit();
   if (action === 'toggle-sidebar') setState({ sidebarCollapsed: !state.sidebarCollapsed });
   if (action === 'focus-search') document.querySelector('#project-search, .settings-search input')?.focus();
   if (action === 'new-project') createNewProject();
-  if (action === 'copy-project-memory') copyText(projectMemoryMarkdown());
   if (action === 'save-settings') saveSettings();
-  if (action === 'copy-global-memory') copyText(globalMemoryMarkdown());
-  if (action === 'download-global-memory') downloadText('global-memory.md', globalMemoryMarkdown());
   if (action === 'write-skill-instructions') openSkillModal('create');
   if (action === 'upload-skill') document.querySelector('.skill-upload-input')?.click();
   if (action === 'close-skill-modal') closeSkillModal();
@@ -2877,6 +2889,10 @@ function handleInput(event) {
     state.promptDraft = event.target.value;
     updateSlashCommandMenu(event.target);
   }
+  if (event.target.id === 'memory-edit-input') {
+    state.memoryEditDraft = event.target.value;
+    syncMemoryEditSubmitState();
+  }
   if (event.target.closest('.skill-modal-fields')) updateSkillModalSubmitState();
   if (event.target.dataset.apiKeyFamily) {
     setApiKeyValue(event.target.dataset.apiKeyFamily, event.target.dataset.apiKeyIndex, event.target.value);
@@ -2918,6 +2934,11 @@ function handleKeydown(event) {
       sendMessageFromCurrentView();
       return;
     }
+  }
+  if (event.target.id === 'memory-edit-input' && event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    submitMemoryEdit();
+    return;
   }
   if (event.key === 'Escape' && state.projectInstructionModalOpen) {
     closeProjectInstructionModal();

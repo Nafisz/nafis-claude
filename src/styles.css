@@ -4132,8 +4132,7 @@ body {
   background: #fff;
 }
 
-.memory-document,
-#memory-modal-editor {
+.memory-document {
   width: 100%;
   height: 100%;
   padding: 26px 30px 38px;
@@ -4142,13 +4141,11 @@ body {
   scrollbar-width: thin;
 }
 
-.memory-document::-webkit-scrollbar,
-#memory-modal-editor::-webkit-scrollbar {
+.memory-document::-webkit-scrollbar {
   width: 10px;
 }
 
-.memory-document::-webkit-scrollbar-thumb,
-#memory-modal-editor::-webkit-scrollbar-thumb {
+.memory-document::-webkit-scrollbar-thumb {
   border: 2px solid #fff;
   border-radius: 999px;
   background: #aaa;
@@ -4185,21 +4182,78 @@ body {
   font-style: italic;
 }
 
-#memory-modal-editor {
+.memory-document-frame.editing-request .memory-document {
+  padding-bottom: 138px;
+}
+
+.memory-instruction-composer {
+  position: absolute;
+  z-index: 3;
+  right: 28px;
+  bottom: 28px;
+  left: 28px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 84px;
+  padding: 12px 14px 12px 34px;
+  border: 1px solid #e2e2e2;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 11%);
+}
+
+.memory-instruction-composer textarea {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  max-height: 96px;
   resize: none;
   border: 0;
-  border-radius: 16px;
   outline: 0;
   background: transparent;
-  color: #171717;
-  font-family: Newsreader, Merriweather, Georgia, serif;
-  font-size: clamp(18px, 1.25vw, 24px);
+  color: #222;
+  font-family: Inter, "Public Sans", system-ui, sans-serif;
+  font-size: 24px;
   line-height: 1.45;
 }
 
-.memory-document-frame.editing {
-  border-color: #9ca3af;
-  box-shadow: 0 0 0 3px rgb(156 163 175 / 14%);
+.memory-instruction-composer textarea::placeholder {
+  color: #7a7a7a;
+}
+
+.memory-instruction-composer button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: #858585;
+  color: #fff;
+}
+
+.memory-instruction-composer button:not(:disabled):hover {
+  background: #6f6f6f;
+}
+
+.memory-instruction-composer button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.memory-instruction-composer .ph {
+  font-size: 27px;
+}
+
+.memory-modal-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  color: #9f1239;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .memory-edit-fab {
@@ -4381,6 +4435,23 @@ body {
     height: 68px;
   }
 
+  .memory-instruction-composer {
+    right: 18px;
+    bottom: 18px;
+    left: 18px;
+    min-height: 70px;
+    padding: 10px 11px 10px 22px;
+  }
+
+  .memory-instruction-composer textarea {
+    font-size: 18px;
+  }
+
+  .memory-instruction-composer button {
+    width: 48px;
+    height: 48px;
+  }
+
   .skill-modal-backdrop {
     padding: 20px;
   }
@@ -4462,6 +4533,28 @@ body {
     padding-inline: 18px;
   }
 
+  .memory-modal-backdrop {
+    padding: 14px;
+  }
+
+  .memory-modal {
+    padding: 22px;
+  }
+
+  .memory-document {
+    padding: 20px 18px 34px;
+  }
+
+  .memory-document-frame.editing-request .memory-document {
+    padding-bottom: 118px;
+  }
+
+  .memory-instruction-composer {
+    right: 12px;
+    left: 12px;
+    border-radius: 28px;
+  }
+
   .back-link {
     width: calc(100% + 36px);
     margin-inline: -18px;
@@ -4486,8 +4579,7 @@ body {
     font-size: 15px;
   }
 
-  .memory-document,
-  #memory-modal-editor {
+  .memory-document {
     padding: 20px 20px 34px;
   }
 

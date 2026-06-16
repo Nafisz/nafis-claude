@@ -30,6 +30,26 @@ Communication should be direct and concise. Evaluate design options before execu
 Tools & resources
 Confluence space KAN is the source of truth. Jira project key is KAN.`;
 
+const globalMemory = `Work context
+Nafis is building NovaX and runs an AI automation agency.
+
+Personal context
+Nafis is Indonesian and prefers direct, precise answers.
+
+Top of mind
+Nafis is actively thinking about AI development trajectories.
+
+Brief history
+
+Recent months
+Nafis has been comparing world model paradigms.
+
+Earlier context
+Nafis evaluated AI IDE workflows.
+
+Long-term background
+Nafis has a long-running interest in first-principles reasoning.`;
+
 test('parses the Claude-like memory section format', () => {
   const sections = parseMemorySections(novaxMemory);
   assert.deepEqual(sections.map((section) => section.heading), MEMORY_SECTIONS);
@@ -98,9 +118,9 @@ test('detects explicit durable-memory signals without triggering on ordinary cha
 
 test('global memory prompt excludes project-specific operational details', () => {
   const prompt = buildMemoryUpdatePrompt({ scope: 'global', existingMemory: '', messages: [{ role: 'user', text: 'I prefer concise answers.' }] });
-  assert.match(prompt, /durable facts about the user across projects/);
-  assert.match(prompt, /Do not copy project-specific architecture/);
-  assert.match(prompt, /Purpose & context[\s\S]*Tools & resources/);
+  assert.match(prompt, /same kind of global memory structure as Claude/);
+  assert.match(prompt, /Do not copy sensitive secrets/);
+  assert.match(prompt, /Work context[\s\S]*Personal context[\s\S]*Top of mind[\s\S]*Brief history[\s\S]*Long-term background/);
 });
 
 test('project memory prompt revises contradictions and preserves useful identifiers', () => {
@@ -118,6 +138,7 @@ test('project memory prompt revises contradictions and preserves useful identifi
 
 test('rejects malformed durable memory so a bad generation cannot overwrite good memory', () => {
   assert.equal(validateMemoryDocument('Here is your updated memory: user likes concise answers.', 'global').valid, false);
+  assert.equal(validateMemoryDocument(globalMemory, 'global').valid, true);
   assert.equal(validateMemoryDocument('Purpose & context\nOnly one section.', 'project').valid, false);
   assert.equal(validateMemoryDocument(novaxMemory, 'project').valid, true);
   assert.equal(validateMemoryDocument('- Decision retained\n- Next action retained', 'session').valid, true);
