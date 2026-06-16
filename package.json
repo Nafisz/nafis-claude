@@ -5,7 +5,7 @@
   "description": "Claude-inspired workspace UI with real Claude API proxy, conversations, project memory, skills, and artifacts.",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check src/app.js && node --check lib/memory.js && node --check lib/branching.js && node --check lib/orchestration.js",
+    "check": "node --check server.js && node --check src/app.js && node --check lib/app-store.js && node --check lib/file-store.js && node --check lib/memory.js && node --check lib/branching.js && node --check lib/orchestration.js",
     "build": "npm run check",
     "test": "node --test test/*.test.js"
   },

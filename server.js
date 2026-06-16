@@ -2,6 +2,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
+const { FileStore } = require('./lib/file-store');
+const { AppStore } = require('./lib/app-store');
 const {
   formatRetrievedMemory,
   formatRetrievedProjectFiles,
@@ -12,12 +14,15 @@ const { formatTriggeredSkills, isMutationAuthorized, runAgentLoop, runJsonAgentL
 
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
+const DATA_DIR = path.resolve(process.env.FILE_DATA_DIR || path.join(ROOT, 'data'));
 const ANTHROPIC_VERSION = '2023-06-01';
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const MAX_TOOL_LOOPS = 4;
 let runtimeAtlassianConfig = null;
 let atlassianDisconnected = false;
+const fileStore = new FileStore(DATA_DIR);
+const appStore = new AppStore(path.join(DATA_DIR, 'store.json'));
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -31,12 +36,21 @@ const MIME_TYPES = {
 };
 
 const ERROR_MESSAGES = {
-  400: 'Request error — context mungkin terlalu panjang.',
+  400: 'Request error - the context may be too long.',
   401: 'API key invalid.',
-  429: 'Rate limit hit. Tunggu sebentar.',
+  403: 'The API key does not have access to this model.',
+  429: 'Rate limit hit. Wait a moment.',
   500: 'Anthropic server error.',
-  529: 'Claude sedang overloaded. Coba lagi sebentar.',
+  529: 'Claude is overloaded. Try again shortly.',
 };
+
+const MODEL_KEY_FAMILIES = [
+  { id: 'opus', pattern: /opus/i, envPrefix: 'ANTHROPIC_OPUS' },
+  { id: 'sonnet', pattern: /sonnet/i, envPrefix: 'ANTHROPIC_SONNET' },
+  { id: 'haiku', pattern: /haiku/i, envPrefix: 'ANTHROPIC_HAIKU' },
+];
+
+const ANTHROPIC_FALLBACK_STATUSES = new Set([401, 403, 408, 409, 429, 500, 502, 503, 504, 529]);
 
 function sendJson(res, status, payload) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -54,7 +68,7 @@ function readRequestBody(req) {
     req.on('data', (chunk) => {
       body += chunk;
       if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-        reject(new Error('Request terlalu besar.'));
+        reject(new Error('Request is too large.'));
         req.destroy();
       }
     });
@@ -103,6 +117,165 @@ function selectRequestedTools(tools = [], requestedNames = []) {
   };
 }
 
+function decodeHeader(value = '') {
+  try {
+    return decodeURIComponent(String(value));
+  } catch {
+    return String(value);
+  }
+}
+
+function validFileScope(scope) {
+  return scope === 'project' || scope === 'conversation';
+}
+
+function splitApiKeys(value) {
+  if (Array.isArray(value)) return value.flatMap(splitApiKeys);
+  return String(value || '')
+    .split(/[\r\n,]+/)
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+function dedupeApiKeys(keys = []) {
+  return [...new Set(keys.map((key) => String(key || '').trim()).filter(Boolean))];
+}
+
+function modelKeyFamily(model = DEFAULT_MODEL) {
+  const match = MODEL_KEY_FAMILIES.find((family) => family.pattern.test(String(model || '')));
+  return match?.id || 'sonnet';
+}
+
+function envApiKeysForModel(model = DEFAULT_MODEL) {
+  const family = MODEL_KEY_FAMILIES.find((item) => item.id === modelKeyFamily(model));
+  const modelEnvKey = `ANTHROPIC_${String(model || DEFAULT_MODEL).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEYS`;
+  return dedupeApiKeys([
+    ...splitApiKeys(process.env[modelEnvKey]),
+    ...splitApiKeys(family ? process.env[`${family.envPrefix}_API_KEYS`] : ''),
+    ...splitApiKeys(family ? process.env[`${family.envPrefix}_API_KEY`] : ''),
+    ...splitApiKeys(process.env.ANTHROPIC_API_KEYS),
+    ...splitApiKeys(process.env.ANTHROPIC_API_KEY),
+  ]);
+}
+
+function storedApiKeysForModel(appState = null, model = DEFAULT_MODEL) {
+  const family = modelKeyFamily(model);
+  const byModel = appState?.apiKeysByModel && typeof appState.apiKeysByModel === 'object' ? appState.apiKeysByModel : {};
+  return dedupeApiKeys([
+    ...splitApiKeys(byModel[model]),
+    ...splitApiKeys(byModel[family]),
+  ]);
+}
+
+function apiKeysFromRequest(body = {}, model = DEFAULT_MODEL, appState = null) {
+  const family = modelKeyFamily(model);
+  const byModel = body.apiKeysByModel && typeof body.apiKeysByModel === 'object' ? body.apiKeysByModel : {};
+  return dedupeApiKeys([
+    ...splitApiKeys(byModel[model]),
+    ...splitApiKeys(byModel[family]),
+    ...splitApiKeys(body.apiKeys),
+    ...splitApiKeys(body.apiKey),
+    ...storedApiKeysForModel(appState, model),
+    ...envApiKeysForModel(model),
+  ]);
+}
+
+function hasServerApiKeys(appState = null) {
+  return Boolean(envApiKeysForModel(DEFAULT_MODEL).length
+    || storedApiKeysForModel(appState, DEFAULT_MODEL).length
+    || MODEL_KEY_FAMILIES.some((family) => (
+      splitApiKeys(process.env[`${family.envPrefix}_API_KEYS`]).length
+      || splitApiKeys(process.env[`${family.envPrefix}_API_KEY`]).length
+      || storedApiKeysForModel(appState, family.id).length
+    )));
+}
+
+function shouldFallbackAnthropicError(error) {
+  if (!error?.status) return true;
+  return ANTHROPIC_FALLBACK_STATUSES.has(Number(error.status));
+}
+
+async function withAnthropicApiKeyFallback(apiKeys, operation) {
+  const keys = dedupeApiKeys(apiKeys);
+  if (!keys.length) throw new Error('API key is unavailable. Add a key for this model in Settings or run the server with ANTHROPIC_API_KEY.');
+  let lastError;
+  const failures = [];
+  for (let index = 0; index < keys.length; index += 1) {
+    try {
+      const result = await operation(keys[index], index);
+      if (result && typeof result === 'object' && !result.apiKeyIndex) {
+        result.apiKeyIndex = index + 1;
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      failures.push(`key ${index + 1}${error.status ? ` HTTP ${error.status}` : ''}`);
+      if (index === keys.length - 1 || !shouldFallbackAnthropicError(error)) break;
+    }
+  }
+  if (failures.length > 1 && lastError) {
+    lastError.message = `${lastError.message || 'Claude API request failed.'} (${failures.join(', ')})`;
+  }
+  throw lastError || new Error('Claude API request failed.');
+}
+
+async function handleFileList(req, res, url) {
+  const scope = String(url.searchParams.get('scope') || '');
+  const scopeId = String(url.searchParams.get('scopeId') || '');
+  if (!validFileScope(scope) || !scopeId) {
+    sendJson(res, 400, { error: 'File scope and scopeId must be valid.' });
+    return;
+  }
+  sendJson(res, 200, { files: await fileStore.list(scope, scopeId) });
+}
+
+async function handleFileUpload(req, res) {
+  const scope = String(req.headers['x-file-scope'] || '');
+  const scopeId = decodeHeader(req.headers['x-file-scope-id'] || '');
+  const name = decodeHeader(req.headers['x-file-name'] || '').trim();
+  const type = String(req.headers['content-type'] || 'application/octet-stream');
+  if (!validFileScope(scope) || !scopeId || !name || name.includes('/') || name.includes('\\')) {
+    sendJson(res, 400, { error: 'File upload metadata is invalid.' });
+    return;
+  }
+  const file = await fileStore.saveStream(req, {
+    name,
+    type,
+    scope,
+    scopeId,
+    included: req.headers['x-file-included'] !== 'false',
+  });
+  sendJson(res, 201, { file });
+}
+
+async function handleFileUpdate(req, res, fileId) {
+  const rawBody = await readRequestBody(req);
+  const body = rawBody ? JSON.parse(rawBody) : {};
+  const file = await fileStore.update(fileId, body);
+  if (!file) {
+    sendJson(res, 404, { error: 'File not found.' });
+    return;
+  }
+  sendJson(res, 200, { file });
+}
+
+async function handleFileDelete(res, fileId) {
+  const removed = await fileStore.remove(fileId);
+  sendJson(res, removed ? 200 : 404, removed ? { removed: true } : { error: 'File not found.' });
+}
+
+async function handleGetAppState(res) {
+  sendJson(res, 200, { state: await appStore.getAppState() });
+}
+
+async function handleSaveAppState(req, res) {
+  const rawBody = await readRequestBody(req);
+  const body = rawBody ? JSON.parse(rawBody) : {};
+  const state = body.state && typeof body.state === 'object' ? body.state : body;
+  await appStore.saveAppState(state);
+  sendJson(res, 200, { ok: true, updatedAt: new Date().toISOString() });
+}
+
 function buildSystemPrompt({
   project,
   skills,
@@ -115,6 +288,7 @@ function buildSystemPrompt({
   explicitSkillIds = [],
   explicitToolNames = [],
   explicitToolsRequested = false,
+  conversationFiles = [],
 }) {
   const selectedSkillIds = (Array.isArray(explicitSkillIds) ? explicitSkillIds : [])
     .map(String)
@@ -129,16 +303,21 @@ function buildSystemPrompt({
     files: project?.files,
     query: lastUserMessage,
   });
+  const retrievedConversationFiles = formatRetrievedProjectFiles({
+    files: conversationFiles,
+    query: lastUserMessage,
+  });
   const triggeredSkills = formatTriggeredSkills(skills || [], lastUserMessage, selectedSkillIds);
   const selectedToolNames = (Array.isArray(explicitToolNames) ? explicitToolNames : []).filter(Boolean);
 
   return [
     'Kamu adalah asisten chat yang mengikuti pola Claude: jelas, tenang, aman, dan langsung membantu.',
     'Jawab dalam Bahasa Indonesia kecuali pengguna meminta bahasa lain.',
-    `Intensitas berpikir: ${tone || 'Sedang'}.`,
+    `Intensitas berpikir: ${tone || 'Medium'}.`,
     projectInstructions ? `## Project Instructions\n${projectInstructions}` : '',
     retrievedMemory ? `## Relevant Memory\n${retrievedMemory}` : '',
     retrievedProjectFiles ? `## Retrieved Project Files\n${retrievedProjectFiles}` : '',
+    retrievedConversationFiles ? `## Retrieved Chat Files\n${retrievedConversationFiles}` : '',
     sessionSummary ? `## Session Summary\n${sessionSummary}` : '',
     triggeredSkills ? `---\n## Triggered Skills\n${triggeredSkills}` : '',
     selectedSkillIds.length
@@ -239,6 +418,25 @@ function currentAtlassianConfig() {
   return envAtlassianConfig();
 }
 
+async function loadPersistedAtlassianConfig() {
+  const saved = await appStore.getConnector('atlassian');
+  if (!saved || saved.disconnected || !saved.connected) {
+    atlassianDisconnected = Boolean(saved?.disconnected);
+    return null;
+  }
+  if (saved.baseUrl && saved.email && saved.apiToken) {
+    runtimeAtlassianConfig = {
+      baseUrl: saved.baseUrl,
+      email: saved.email,
+      apiToken: saved.apiToken,
+      source: saved.source || 'backend',
+    };
+    atlassianDisconnected = false;
+    return runtimeAtlassianConfig;
+  }
+  return null;
+}
+
 function isAtlassianConfigured() {
   return Boolean(currentAtlassianConfig());
 }
@@ -253,11 +451,11 @@ function normalizeAtlassianBaseUrl(value = '') {
   try {
     url = new URL(String(value).trim());
   } catch {
-    throw new Error('URL Atlassian tidak valid.');
+    throw new Error('Atlassian URL is invalid.');
   }
-  if (url.protocol !== 'https:') throw new Error('URL Atlassian harus menggunakan HTTPS.');
-  if (url.username || url.password || url.search || url.hash) throw new Error('Gunakan URL dasar Atlassian tanpa kredensial, query, atau hash.');
-  if (!/^\/*$/.test(url.pathname)) throw new Error('Gunakan URL dasar Atlassian tanpa path tambahan.');
+  if (url.protocol !== 'https:') throw new Error('Atlassian URL must use HTTPS.');
+  if (url.username || url.password || url.search || url.hash) throw new Error('Use the base Atlassian URL without credentials, query, or hash.');
+  if (!/^\/*$/.test(url.pathname)) throw new Error('Use the base Atlassian URL without an extra path.');
   return url.origin;
 }
 
@@ -292,7 +490,7 @@ function truncateToolResult(value, maxChars = 40000) {
 
 async function atlassianRequest(pathname, options = {}, config = currentAtlassianConfig()) {
   const headers = atlassianAuthHeaders(config);
-  if (!config?.baseUrl || !headers) throw new Error('Atlassian connector belum dikonfigurasi. Hubungkan akun dari halaman Connectors atau set environment server.');
+  if (!config?.baseUrl || !headers) throw new Error('Atlassian connector is not configured. Connect an account from the Connectors page or set the server environment.');
   const response = await fetch(`${config.baseUrl}${pathname}`, {
     ...options,
     headers: { ...headers, ...(options.body ? { 'content-type': 'application/json' } : {}), ...(options.headers || {}) },
@@ -302,13 +500,13 @@ async function atlassianRequest(pathname, options = {}, config = currentAtlassia
   try { data = raw ? JSON.parse(raw) : {}; } catch {}
   if (!response.ok) {
     const detail = data?.errorMessages?.join(' ') || data?.message || data?.errors && JSON.stringify(data.errors) || raw || `HTTP ${response.status}`;
-    throw new Error(`Atlassian request gagal (${response.status}): ${detail}`);
+    throw new Error(`Atlassian request failed (${response.status}): ${detail}`);
   }
   return data;
 }
 
 async function testAtlassianConnection(config = currentAtlassianConfig()) {
-  if (!config) throw new Error('Atlassian connector belum dikonfigurasi.');
+  if (!config) throw new Error('Atlassian connector is not configured.');
   const [jiraUser, confluenceSpaces] = await Promise.all([
     atlassianRequest('/rest/api/3/myself', {}, config),
     atlassianRequest('/wiki/api/v2/spaces?limit=1', {}, config),
@@ -332,30 +530,48 @@ async function handleAtlassianConnect(req, res) {
     source: 'session',
   };
   if (!config.email || !config.apiToken) {
-    sendJson(res, 400, { error: 'Email dan API token Atlassian wajib diisi.' });
+    sendJson(res, 400, { error: 'Atlassian email and API token are required.' });
     return;
   }
   const verification = await testAtlassianConnection(config);
-  runtimeAtlassianConfig = config;
+  runtimeAtlassianConfig = { ...config, source: 'backend' };
   atlassianDisconnected = false;
+  await appStore.saveConnector('atlassian', {
+    ...runtimeAtlassianConfig,
+    connected: true,
+    disconnected: false,
+    displayName: verification.displayName || '',
+    checkedAt: verification.checkedAt || new Date().toISOString(),
+  });
   sendJson(res, 200, publicAtlassianStatus(verification));
 }
 
 async function handleAtlassianTest(_req, res) {
   const verification = await testAtlassianConnection();
+  const config = currentAtlassianConfig();
+  if (config) {
+    await appStore.saveConnector('atlassian', {
+      ...config,
+      connected: true,
+      disconnected: false,
+      displayName: verification.displayName || '',
+      checkedAt: verification.checkedAt || new Date().toISOString(),
+    });
+  }
   sendJson(res, 200, publicAtlassianStatus(verification));
 }
 
-function handleAtlassianDisconnect(res) {
+async function handleAtlassianDisconnect(res) {
   runtimeAtlassianConfig = null;
   atlassianDisconnected = true;
+  await appStore.saveConnector('atlassian', { connected: false, disconnected: true, source: 'backend' });
   sendJson(res, 200, publicAtlassianStatus());
 }
 
 async function executeAtlassianTool(tool, context = {}) {
   const input = tool.input || {};
   if (!isMutationAuthorized(tool.name, context.latestUserMessage)) {
-    throw new Error('Operasi tulis diblokir karena pesan terbaru user tidak memberi instruksi eksplisit untuk mengubah Atlassian.');
+    throw new Error('Write operation blocked because the latest user message did not explicitly ask to modify Atlassian.');
   }
   const limit = Math.min(Math.max(Number(input.limit || 5), 1), 10);
 
@@ -396,7 +612,7 @@ async function executeAtlassianTool(tool, context = {}) {
     if (input.summary) fields.summary = input.summary;
     if (input.description) fields.description = jiraDocument(input.description);
     if (input.assigneeAccountId) fields.assignee = { accountId: input.assigneeAccountId };
-    if (!Object.keys(fields).length) throw new Error('Tidak ada field Jira yang diberikan untuk di-update.');
+    if (!Object.keys(fields).length) throw new Error('No Jira fields were provided to update.');
     await atlassianRequest(`/rest/api/3/issue/${encodeURIComponent(input.issueKey)}`, { method: 'PUT', body: JSON.stringify({ fields }) });
     return truncateToolResult({ key: input.issueKey, status: 'updated', fields: Object.keys(fields) });
   }
@@ -404,7 +620,7 @@ async function executeAtlassianTool(tool, context = {}) {
     const data = await atlassianRequest(`/rest/api/3/issue/${encodeURIComponent(input.issueKey)}/comment`, { method: 'POST', body: JSON.stringify({ body: jiraDocument(input.comment) }) });
     return truncateToolResult({ id: data.id, issueKey: input.issueKey, status: 'commented' });
   }
-  throw new Error(`Tool tidak dikenal: ${tool.name}`);
+  throw new Error(`Unknown tool: ${tool.name}`);
 }
 
 function sleep(ms) {
@@ -425,7 +641,7 @@ async function fetchAnthropic(options, attempts = 3) {
     }
     await sleep(500 * (2 ** attempt));
   }
-  throw lastError || new Error('Request ke Claude API gagal.');
+  throw lastError || new Error('Claude API request failed.');
 }
 
 async function callAnthropicJson({ apiKey, model, system, messages, maxTokens, tools = [] }) {
@@ -436,12 +652,16 @@ async function callAnthropicJson({ apiKey, model, system, messages, maxTokens, t
   });
   const data = await response.json();
   if (!response.ok) {
-    const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Request ke Claude API gagal.');
+    const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Claude API request failed.');
     error.status = response.status;
     error.details = data?.error || data;
     throw error;
   }
   return data;
+}
+
+function callAnthropicJsonWithFallback({ apiKeys, model, system, messages, maxTokens, tools = [] }) {
+  return withAnthropicApiKeyFallback(apiKeys, (apiKey) => callAnthropicJson({ apiKey, model, system, messages, maxTokens, tools }));
 }
 
 async function callAnthropicStream({ apiKey, model, system, messages, maxTokens, tools }) {
@@ -453,12 +673,34 @@ async function callAnthropicStream({ apiKey, model, system, messages, maxTokens,
   if (!response.ok) {
     let data = {};
     try { data = await response.json(); } catch {}
-    const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Request ke Claude API gagal.');
+    const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Claude API request failed.');
     error.status = response.status;
     error.details = data?.error || data;
     throw error;
   }
   return response;
+}
+
+function callAnthropicStreamWithFallback({ apiKeys, model, system, messages, maxTokens, tools }) {
+  return withAnthropicApiKeyFallback(apiKeys, (apiKey) => callAnthropicStream({ apiKey, model, system, messages, maxTokens, tools }));
+}
+
+async function callAnthropicCountTokens({ apiKeys, model, system, messages, tools = [] }) {
+  return withAnthropicApiKeyFallback(apiKeys, async (apiKey) => {
+    const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': apiKey },
+      body: JSON.stringify({ model, system, messages, ...(tools.length ? { tools } : {}) }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const error = new Error(data?.error?.message || ERROR_MESSAGES[response.status] || 'Token counting failed.');
+      error.status = response.status;
+      error.details = data?.error || data;
+      throw error;
+    }
+    return data;
+  });
 }
 
 async function parseAnthropicStream(response, handlers) {
@@ -514,27 +756,39 @@ function buildMemoryPrompt(body) {
 async function handleChat(req, res, stream = false) {
   const rawBody = await readRequestBody(req);
   const body = rawBody ? JSON.parse(rawBody) : {};
-  const apiKey = String(body.apiKey || process.env.ANTHROPIC_API_KEY || '').trim();
+  const model = String(body.model || DEFAULT_MODEL);
+  const storedState = await appStore.getAppState();
+  const apiKeys = apiKeysFromRequest(body, model, storedState);
 
-  if (!apiKey) {
-    sendJson(res, 400, { error: 'API key belum tersedia. Isi di panel API Key atau jalankan server dengan ANTHROPIC_API_KEY.' });
+  if (!apiKeys.length) {
+    sendJson(res, 400, { error: 'API key is unavailable. Add a key for this model in Settings or run the server with ANTHROPIC_API_KEY.' });
     return;
   }
 
   const messages = normalizeMessages(body.messages);
   if (!messages.length || messages[messages.length - 1].role !== 'user') {
-    sendJson(res, 400, { error: 'Percakapan harus dimulai dan berakhir dengan pesan user.' });
+    sendJson(res, 400, { error: 'The conversation must start and end with a user message.' });
     return;
   }
 
-  const model = String(body.model || DEFAULT_MODEL);
   const lastUserMessage = textFromContent(messages[messages.length - 1].content);
+  const storedProjectFiles = body.project?.id
+    ? await fileStore.readSelected(body.project.fileIds, 'project', body.project.id)
+    : [];
+  const conversationFiles = body.conversationId
+    ? await fileStore.readSelected(body.conversationFileIds, 'conversation', body.conversationId)
+    : [];
+  const project = body.project
+    ? { ...body.project, files: storedProjectFiles }
+    : null;
   const atlassianConfigured = isAtlassianConfigured();
   const availableTools = atlassianConfigured ? atlassianTools() : [];
   const toolSelection = selectRequestedTools(availableTools, body.explicitToolNames);
   const tools = toolSelection.tools;
   const system = buildSystemPrompt({
     ...body,
+    project,
+    conversationFiles,
     lastUserMessage,
     atlassianConfigured,
     explicitToolNames: toolSelection.names,
@@ -545,7 +799,7 @@ async function handleChat(req, res, stream = false) {
     const result = await runJsonAgentLoop({
       messages,
       maxLoops: MAX_TOOL_LOOPS,
-      callModel: (workingMessages) => callAnthropicJson({ apiKey, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools }),
+      callModel: (workingMessages) => callAnthropicJsonWithFallback({ apiKeys, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools }),
       executeTool: (tool) => executeAtlassianTool(tool, { latestUserMessage: lastUserMessage }),
     });
     sendJson(res, 200, { text: result.text, usage: result.usage, model: result.model || model, stopReason: result.stopReason });
@@ -564,7 +818,7 @@ async function handleChat(req, res, stream = false) {
       messages,
       maxLoops: MAX_TOOL_LOOPS,
       async streamModel(workingMessages, onEvent) {
-        const upstream = await callAnthropicStream({ apiKey, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools });
+        const upstream = await callAnthropicStreamWithFallback({ apiKeys, model, system, messages: workingMessages, maxTokens: Number(body.maxTokens || 8096), tools });
         await parseAnthropicStream(upstream, { onEvent: async (_name, event) => onEvent(event) });
       },
       executeTool: (tool) => executeAtlassianTool(tool, { latestUserMessage: lastUserMessage }),
@@ -574,7 +828,7 @@ async function handleChat(req, res, stream = false) {
     sendSse(res, 'done', { text: result.text, usage: result.usage, model, stopReason: result.stopReason });
     res.end();
   } catch (error) {
-    sendSse(res, 'error', { error: error.message || 'Claude API gagal merespons.', details: error.details });
+    sendSse(res, 'error', { error: error.message || 'Claude API failed to respond.', details: error.details });
     res.end();
   }
 }
@@ -582,20 +836,21 @@ async function handleChat(req, res, stream = false) {
 async function handleMemory(req, res) {
   const rawBody = await readRequestBody(req);
   const body = rawBody ? JSON.parse(rawBody) : {};
-  const apiKey = String(body.apiKey || process.env.ANTHROPIC_API_KEY || '').trim();
-  if (!apiKey) {
-    sendJson(res, 400, { error: 'API key belum tersedia untuk memory.' });
+  const model = String(body.model || 'claude-haiku-4-5-20251001');
+  const storedState = await appStore.getAppState();
+  const apiKeys = apiKeysFromRequest(body, model, storedState);
+  if (!apiKeys.length) {
+    sendJson(res, 400, { error: 'API key is unavailable for memory.' });
     return;
   }
   const messages = normalizeMessages(body.messages);
   if (!messages.length) {
-    sendJson(res, 400, { error: 'Tidak ada transcript yang bisa diringkas menjadi memory.' });
+    sendJson(res, 400, { error: 'There is no transcript to summarize into memory.' });
     return;
   }
   try {
-    const model = String(body.model || 'claude-haiku-4-5-20251001');
-    const data = await callAnthropicJson({
-      apiKey,
+    const data = await callAnthropicJsonWithFallback({
+      apiKeys,
       model,
       maxTokens: Number(body.maxTokens || 700),
       system: 'You maintain durable Claude-style memory. Follow scope boundaries and output-format requirements exactly.',
@@ -604,53 +859,64 @@ async function handleMemory(req, res) {
     const memory = extractTextFromAnthropic(data);
     const validation = validateMemoryDocument(memory, body.scope);
     if (!validation.valid) {
-      sendJson(res, 502, { error: 'Format memory dari model tidak valid; memory lama dipertahankan.', reason: validation.reason });
+      sendJson(res, 502, { error: 'The model returned an invalid memory format; the previous memory was kept.', reason: validation.reason });
       return;
     }
     sendJson(res, 200, { memory, usage: data.usage, model: data.model || model });
   } catch (error) {
-    sendJson(res, error.status || 500, { error: error.message || 'Generate memory gagal.', details: error.details });
+    sendJson(res, error.status || 500, { error: error.message || 'Failed to generate memory.', details: error.details });
   }
 }
 
 async function handleCountTokens(req, res) {
   const rawBody = await readRequestBody(req);
   const body = rawBody ? JSON.parse(rawBody) : {};
-  const apiKey = String(body.apiKey || process.env.ANTHROPIC_API_KEY || '').trim();
-  if (!apiKey) {
-    sendJson(res, 400, { error: 'API key belum tersedia untuk count_tokens.' });
+  const model = String(body.model || DEFAULT_MODEL);
+  const storedState = await appStore.getAppState();
+  const apiKeys = apiKeysFromRequest(body, model, storedState);
+  if (!apiKeys.length) {
+    sendJson(res, 400, { error: 'API key is unavailable for count_tokens.' });
     return;
   }
-  const model = String(body.model || DEFAULT_MODEL);
   const messages = normalizeMessages(body.messages);
+  const storedProjectFiles = body.project?.id
+    ? await fileStore.readSelected(body.project.fileIds, 'project', body.project.id)
+    : [];
+  const conversationFiles = body.conversationId
+    ? await fileStore.readSelected(body.conversationFileIds, 'conversation', body.conversationId)
+    : [];
+  const project = body.project
+    ? { ...body.project, files: storedProjectFiles }
+    : null;
   const atlassianConfigured = isAtlassianConfigured();
   const availableTools = atlassianConfigured ? atlassianTools() : [];
   const toolSelection = selectRequestedTools(availableTools, body.explicitToolNames);
   const system = buildSystemPrompt({
     ...body,
+    project,
+    conversationFiles,
     lastUserMessage: textFromContent(messages.at(-1)?.content),
     atlassianConfigured,
     explicitToolNames: toolSelection.names,
     explicitToolsRequested: toolSelection.explicit,
   });
-  const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, 'x-api-key': apiKey },
-    body: JSON.stringify({ model, system, messages, ...(toolSelection.tools.length ? { tools: toolSelection.tools } : {}) }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    sendJson(res, response.status, { error: data?.error?.message || ERROR_MESSAGES[response.status] || 'Count token gagal.', details: data?.error || data });
-    return;
+  try {
+    const data = await callAnthropicCountTokens({ apiKeys, model, system, messages, tools: toolSelection.tools });
+    sendJson(res, 200, data);
+  } catch (error) {
+    sendJson(res, error.status || 500, { error: error.message || 'Token counting failed.', details: error.details });
   }
-  sendJson(res, 200, data);
 }
 
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const unsafePath = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
   const filePath = path.normalize(path.join(ROOT, unsafePath));
-  if (!filePath.startsWith(ROOT)) {
+  const relativePath = path.relative(ROOT, filePath);
+  const relativeDataPath = path.relative(DATA_DIR, filePath);
+  const outsideRoot = relativePath.startsWith('..') || path.isAbsolute(relativePath);
+  const insideData = !relativeDataPath.startsWith('..') && !path.isAbsolute(relativeDataPath);
+  if (outsideRoot || insideData) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
@@ -667,44 +933,80 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/api/health') {
-    sendJson(res, 200, {
-      ok: true,
-      hasServerApiKey: Boolean(process.env.ANTHROPIC_API_KEY),
-      atlassianConfigured: isAtlassianConfigured(),
-      tools: isAtlassianConfigured() ? atlassianTools().map((tool) => tool.name) : [],
-    });
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (req.method === 'GET' && url.pathname === '/api/health') {
+    appStore.getAppState()
+      .then((storedState) => sendJson(res, 200, {
+        ok: true,
+        hasServerApiKey: hasServerApiKeys(storedState),
+        serverApiKeyModels: Object.fromEntries(MODEL_KEY_FAMILIES.map((family) => [
+          family.id,
+          Boolean(
+            splitApiKeys(process.env[`${family.envPrefix}_API_KEYS`]).length
+            || splitApiKeys(process.env[`${family.envPrefix}_API_KEY`]).length
+            || storedApiKeysForModel(storedState, family.id).length
+          ),
+        ])),
+        atlassianConfigured: isAtlassianConfigured(),
+        tools: isAtlassianConfigured() ? atlassianTools().map((tool) => tool.name) : [],
+      }))
+      .catch((error) => sendJson(res, 500, { error: error.message || 'Health check failed.' }));
     return;
   }
-  if (req.method === 'GET' && req.url === '/api/connectors/atlassian') {
+  if (req.method === 'GET' && url.pathname === '/api/state') {
+    handleGetAppState(res).catch((error) => sendJson(res, 500, { error: error.message || 'Failed to load state.' }));
+    return;
+  }
+  if ((req.method === 'PUT' || req.method === 'POST') && url.pathname === '/api/state') {
+    handleSaveAppState(req, res).catch((error) => sendJson(res, 500, { error: error.message || 'Failed to save state.' }));
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/files') {
+    handleFileList(req, res, url).catch((error) => sendJson(res, 500, { error: error.message || 'Failed to load file list.' }));
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/api/files') {
+    handleFileUpload(req, res).catch((error) => sendJson(res, 500, { error: error.message || 'File upload failed.' }));
+    return;
+  }
+  const fileRoute = url.pathname.match(/^\/api\/files\/([^/]+)$/);
+  if (req.method === 'PATCH' && fileRoute) {
+    handleFileUpdate(req, res, decodeURIComponent(fileRoute[1])).catch((error) => sendJson(res, 500, { error: error.message || 'File update failed.' }));
+    return;
+  }
+  if (req.method === 'DELETE' && fileRoute) {
+    handleFileDelete(res, decodeURIComponent(fileRoute[1])).catch((error) => sendJson(res, 500, { error: error.message || 'File delete failed.' }));
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/connectors/atlassian') {
     sendJson(res, 200, publicAtlassianStatus());
     return;
   }
-  if (req.method === 'POST' && req.url === '/api/connectors/atlassian/connect') {
-    handleAtlassianConnect(req, res).catch((error) => sendJson(res, error.status || 502, { error: error.message || 'Koneksi Atlassian gagal.' }));
+  if (req.method === 'POST' && url.pathname === '/api/connectors/atlassian/connect') {
+    handleAtlassianConnect(req, res).catch((error) => sendJson(res, error.status || 502, { error: error.message || 'Atlassian connection failed.' }));
     return;
   }
-  if (req.method === 'POST' && req.url === '/api/connectors/atlassian/test') {
-    handleAtlassianTest(req, res).catch((error) => sendJson(res, error.status || 502, { error: error.message || 'Tes koneksi Atlassian gagal.' }));
+  if (req.method === 'POST' && url.pathname === '/api/connectors/atlassian/test') {
+    handleAtlassianTest(req, res).catch((error) => sendJson(res, error.status || 502, { error: error.message || 'Atlassian connection test failed.' }));
     return;
   }
-  if (req.method === 'POST' && req.url === '/api/connectors/atlassian/disconnect') {
-    handleAtlassianDisconnect(res);
+  if (req.method === 'POST' && url.pathname === '/api/connectors/atlassian/disconnect') {
+    handleAtlassianDisconnect(res).catch((error) => sendJson(res, error.status || 500, { error: error.message || 'Failed to disconnect Atlassian.' }));
     return;
   }
-  if (req.method === 'POST' && req.url === '/api/chat') {
+  if (req.method === 'POST' && url.pathname === '/api/chat') {
     handleChat(req, res, false).catch((error) => sendJson(res, error.status || 500, { error: error.message || 'Server error.' }));
     return;
   }
-  if (req.method === 'POST' && req.url === '/api/chat-stream') {
+  if (req.method === 'POST' && url.pathname === '/api/chat-stream') {
     handleChat(req, res, true).catch((error) => sendJson(res, error.status || 500, { error: error.message || 'Server error.' }));
     return;
   }
-  if (req.method === 'POST' && req.url === '/api/memory') {
+  if (req.method === 'POST' && url.pathname === '/api/memory') {
     handleMemory(req, res).catch((error) => sendJson(res, error.status || 500, { error: error.message || 'Server error.' }));
     return;
   }
-  if (req.method === 'POST' && req.url === '/api/count-tokens') {
+  if (req.method === 'POST' && url.pathname === '/api/count-tokens') {
     handleCountTokens(req, res).catch((error) => sendJson(res, error.status || 500, { error: error.message || 'Server error.' }));
     return;
   }
@@ -712,13 +1014,15 @@ const server = http.createServer((req, res) => {
     serveStatic(req, res);
     return;
   }
-  sendJson(res, 405, { error: 'Method tidak didukung.' });
+  sendJson(res, 405, { error: 'Method not supported.' });
 });
 
 if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`Nafis Claude Workspace berjalan di http://localhost:${PORT}`);
-  });
+  loadPersistedAtlassianConfig().catch((error) => {
+    console.warn(`Atlassian connector backend failed to load: ${error.message}`);
+  }).finally(() => server.listen(PORT, () => {
+    console.log(`Nafis Claude Workspace running at http://localhost:${PORT}`);
+  }));
 }
 
 module.exports = {
@@ -731,8 +1035,18 @@ module.exports = {
   parseAnthropicStream,
   truncateToolResult,
   fetchAnthropic,
+  splitApiKeys,
+  modelKeyFamily,
+  apiKeysFromRequest,
+  envApiKeysForModel,
+  withAnthropicApiKeyFallback,
+  callAnthropicJsonWithFallback,
+  callAnthropicCountTokens,
   normalizeAtlassianBaseUrl,
   publicAtlassianStatus,
   testAtlassianConnection,
+  loadPersistedAtlassianConfig,
+  appStore,
+  fileStore,
   server,
 };

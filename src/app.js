@@ -4,12 +4,10 @@ const STORAGE_KEY = 'nafisClaudeWorkspace:v2';
 const CONTEXT_CHAR_BUDGET = 3_200_000;
 const SESSION_SUMMARY_TRIGGER = 14;
 const MEMORY_UPDATE_TURN_INTERVAL = 6;
-const MAX_PROJECT_FILE_BYTES = 500_000;
-const MAX_PROJECT_TOTAL_BYTES = 1_200_000;
-const MAX_PROJECT_FILES = 12;
 const PROJECT_FILE_EXTENSIONS = new Set(['md', 'txt', 'json', 'csv', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'xml', 'yaml', 'yml']);
 
 const DEFAULT_MODEL_ID = 'claude-sonnet-4-6';
+const MEMORY_MODEL_ID = 'claude-haiku-4-5-20251001';
 const MEMORY_SECTION_TITLES = [
   'Purpose & context',
   'Current state',
@@ -20,12 +18,59 @@ const MEMORY_SECTION_TITLES = [
 ];
 
 const defaultModels = [
-  { id: 'claude-opus-4-8', label: 'Opus 4.8', tier: 'max', detail: 'Reasoning maksimum.' },
-  { id: 'claude-opus-4-7', label: 'Opus 4.7', tier: 'max', detail: 'Reasoning mendalam.' },
-  { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'max', detail: 'Reasoning paling mendalam.' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'default', detail: 'Default untuk kerja harian dan arsitektur.' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'fast', detail: 'Cepat dan hemat.' },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', tier: 'max', detail: 'Maximum reasoning.' },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7', tier: 'max', detail: 'Deep reasoning.' },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', tier: 'max', detail: 'Deepest reasoning.' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', tier: 'default', detail: 'Default for daily work and architecture.' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', tier: 'fast', detail: 'Fast and cost efficient.' },
 ];
+
+const modelKeyFamilies = [
+  { id: 'opus', label: 'Opus', pattern: /opus/i, detail: 'Used by all Opus models.' },
+  { id: 'sonnet', label: 'Sonnet', pattern: /sonnet/i, detail: 'Used by all Sonnet models.' },
+  { id: 'haiku', label: 'Haiku', pattern: /haiku/i, detail: 'Used by all Haiku models and memory.' },
+];
+
+const toneOptions = ['Low', 'Medium', 'High'];
+const toneAliases = { Rendah: 'Low', Sedang: 'Medium', Tinggi: 'High' };
+
+function normalizeTone(value) {
+  const tone = toneAliases[value] || value || 'Medium';
+  return toneOptions.includes(tone) ? tone : 'Medium';
+}
+
+function splitApiKeys(value) {
+  if (Array.isArray(value)) return value.flatMap(splitApiKeys);
+  return String(value || '')
+    .split(/[\r\n,]+/)
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+function compactApiKeysByModel(source = {}) {
+  return Object.fromEntries(modelKeyFamilies.map((family) => [
+    family.id,
+    [...new Set(splitApiKeys(source[family.id]))],
+  ]));
+}
+
+function emptyApiKeysByModel() {
+  return Object.fromEntries(modelKeyFamilies.map((family) => [family.id, []]));
+}
+
+function normalizeStoredApiKeys(source = {}, legacyKey = '') {
+  const compact = compactApiKeysByModel(source);
+  const legacyKeys = splitApiKeys(legacyKey);
+  const hasFamilyKeys = Object.values(compact).some((keys) => keys.length);
+  return Object.fromEntries(modelKeyFamilies.map((family) => [
+    family.id,
+    compact[family.id].length ? compact[family.id] : (hasFamilyKeys ? [] : legacyKeys),
+  ]));
+}
+
+function modelKeyFamilyForModel(modelId = DEFAULT_MODEL_ID) {
+  return modelKeyFamilies.find((family) => family.pattern.test(String(modelId || '')))?.id || 'sonnet';
+}
 
 const defaultSkills = [
   {
@@ -33,70 +78,70 @@ const defaultSkills = [
     name: 'Confluence',
     active: false,
     builtin: true,
-    description: 'Cari halaman, baca ruang kerja, dan rangkum dokumen internal jika konektor tersedia.',
-    triggerKeywords: ['confluence', 'wiki', 'page', 'halaman', 'dokumen internal'],
-    content: 'Gunakan skill ini saat user meminta konteks dari Confluence. Jelaskan jika konektor belum tersedia dan jangan mengarang isi halaman.',
+    description: 'Search pages, read the workspace, and summarize internal docs when the connector is available.',
+    triggerKeywords: ['confluence', 'wiki', 'page', 'internal docs'],
+    content: 'Use this skill when the user asks for Confluence context. Explain when the connector is unavailable and do not invent page content.',
   },
   {
     id: 'generate-file',
     name: 'Generate File',
     active: true,
     builtin: true,
-    description: 'Membuat dokumen, kode, dan artefak sebagai file yang bisa dibuka/diunduh.',
-    triggerKeywords: ['file', 'generate', 'buat dokumen', '.md', '.txt', '.json', '.js'],
-    content: 'Saat user meminta file, hasilkan konten siap pakai, beri nama file jelas, dan simpan sebagai artefak percakapan.',
+    description: 'Create documents, code, and artifacts as files that can be opened or downloaded.',
+    triggerKeywords: ['file', 'generate', 'document', '.md', '.txt', '.json', '.js'],
+    content: 'When the user asks for a file, produce ready-to-use content, give it a clear filename, and save it as a conversation artifact.',
   },
   {
     id: 'product-analysis',
-    name: 'Analisis Produk',
+    name: 'Product Analysis',
     active: true,
     builtin: true,
-    description: 'Menyusun PRD, roadmap, metrik, dan riset kompetitor.',
-    triggerKeywords: ['prd', 'roadmap', 'produk', 'metric', 'metrik', 'riset'],
-    content: 'Gunakan struktur produk: masalah, target user, asumsi, fitur, metrik sukses, risiko, dan next steps.',
+    description: 'Draft PRDs, roadmaps, metrics, and competitor research.',
+    triggerKeywords: ['prd', 'roadmap', 'product', 'metric', 'research'],
+    content: 'Use a product structure: problem, target user, assumptions, features, success metrics, risks, and next steps.',
   },
   {
     id: 'ui-design',
-    name: 'Desain UI',
+    name: 'UI Design',
     active: true,
     builtin: true,
-    description: 'Memberi kritik visual dan menghasilkan spesifikasi antarmuka.',
-    triggerKeywords: ['ui', 'ux', 'design', 'desain', 'interface'],
-    content: 'Nilai UI dari hierarchy, spacing, contrast, affordance, accessibility, responsive behavior, dan microcopy.',
+    description: 'Give visual critique and produce interface specifications.',
+    triggerKeywords: ['ui', 'ux', 'design', 'interface'],
+    content: 'Evaluate UI by hierarchy, spacing, contrast, affordance, accessibility, responsive behavior, and microcopy.',
   },
 ];
 
 const promptToolCommands = [
-  { id: 'atlassian_confluence_search', command: 'confluence-search', label: 'Search Confluence', description: 'Cari halaman Confluence dari kata kunci.' },
-  { id: 'atlassian_confluence_get_page', command: 'confluence-page', label: 'Read Confluence page', description: 'Baca satu halaman Confluence berdasarkan page ID.' },
-  { id: 'atlassian_confluence_update_page', command: 'confluence-update', label: 'Update Confluence page', description: 'Perbarui halaman Confluence setelah membaca versi terbaru.' },
-  { id: 'atlassian_jira_search', command: 'jira-search', label: 'Search Jira', description: 'Cari issue Jira dengan teks atau JQL.' },
-  { id: 'atlassian_jira_get_issue', command: 'jira-issue', label: 'Read Jira issue', description: 'Baca satu issue Jira berdasarkan issue key.' },
-  { id: 'atlassian_jira_create_issue', command: 'jira-create', label: 'Create Jira issue', description: 'Buat issue Jira saat diminta secara eksplisit.' },
-  { id: 'atlassian_jira_update_issue', command: 'jira-update', label: 'Update Jira issue', description: 'Perbarui field issue Jira yang dipilih.' },
-  { id: 'atlassian_jira_add_comment', command: 'jira-comment', label: 'Comment on Jira issue', description: 'Tambahkan komentar ke issue Jira.' },
+  { id: 'atlassian_confluence_search', command: 'confluence-search', label: 'Search Confluence', description: 'Search Confluence pages by keyword.' },
+  { id: 'atlassian_confluence_get_page', command: 'confluence-page', label: 'Read Confluence page', description: 'Read one Confluence page by page ID.' },
+  { id: 'atlassian_confluence_update_page', command: 'confluence-update', label: 'Update Confluence page', description: 'Update a Confluence page after reading the latest version.' },
+  { id: 'atlassian_jira_search', command: 'jira-search', label: 'Search Jira', description: 'Search Jira issues by text or JQL.' },
+  { id: 'atlassian_jira_get_issue', command: 'jira-issue', label: 'Read Jira issue', description: 'Read one Jira issue by issue key.' },
+  { id: 'atlassian_jira_create_issue', command: 'jira-create', label: 'Create Jira issue', description: 'Create a Jira issue when explicitly requested.' },
+  { id: 'atlassian_jira_update_issue', command: 'jira-update', label: 'Update Jira issue', description: 'Update fields on the selected Jira issue.' },
+  { id: 'atlassian_jira_add_comment', command: 'jira-comment', label: 'Comment on Jira issue', description: 'Add a comment to a Jira issue.' },
 ];
 
 const defaultProjects = [
   {
     id: 'nova',
     name: 'NovaX Edtech',
-    systemPrompt: 'Gunakan Bahasa Indonesia, fokus pada edtech B2B, target sekolah dan bootcamp.',
-    memory: 'Gunakan Bahasa Indonesia, fokus pada edtech B2B, target sekolah dan bootcamp.',
+    systemPrompt: 'Use Bahasa Indonesia for responses; focus on B2B edtech for schools and bootcamps.',
+    memory: 'Use Bahasa Indonesia for responses; focus on B2B edtech for schools and bootcamps.',
     color: 'apricot',
   },
   {
     id: 'game',
     name: 'AI Game Lab',
-    systemPrompt: 'Preferensi: prototype cepat, agent NPC, Godot/Unity ringan, gameplay dulu baru visual.',
-    memory: 'Preferensi: prototype cepat, agent NPC, Godot/Unity ringan, gameplay dulu baru visual.',
+    systemPrompt: 'Preference: rapid prototypes, NPC agents, lightweight Godot/Unity, gameplay before visuals.',
+    memory: 'Preference: rapid prototypes, NPC agents, lightweight Godot/Unity, gameplay before visuals.',
     color: 'sage',
   },
   {
     id: 'ops',
-    name: 'Operasional Pribadi',
-    systemPrompt: 'Prioritaskan ringkasan eksekutif, checklist mingguan, dan integrasi dokumen kerja.',
-    memory: 'Prioritaskan ringkasan eksekutif, checklist mingguan, dan integrasi dokumen kerja.',
+    name: 'Personal Ops',
+    systemPrompt: 'Prioritize executive summaries, weekly checklists, and work-document integrations.',
+    memory: 'Prioritize executive summaries, weekly checklists, and work-document integrations.',
     color: 'violet',
   },
 ];
@@ -104,14 +149,14 @@ const defaultProjects = [
 const welcomeMessage = {
   id: crypto.randomUUID(),
   role: 'assistant',
-  text: 'Malam, siffan. Saya siap membantu lewat chat, memori proyek, skill, dan artefak file.',
+  text: 'Good evening, siffan. I can help with chat, project memory, skills, and file artifacts.',
   createdAt: new Date().toISOString(),
 };
 
-const defaultBriefContent = '# Brief Proyek\n\nGunakan panel ini untuk menyimpan context project yang dapat diretrieve oleh AI.';
+const defaultBriefContent = '# Project Brief\n\nUse this panel to store project context that AI can retrieve.';
 const defaultProjectFile = {
   id: crypto.randomUUID(),
-  name: 'brief-proyek.md',
+  name: 'project-brief.md',
   type: 'text/markdown',
   size: new Blob([defaultBriefContent]).size,
   content: defaultBriefContent,
@@ -121,9 +166,10 @@ const defaultProjectFile = {
 
 const initialState = {
   model: DEFAULT_MODEL_ID,
-  tone: 'Sedang',
+  tone: 'Medium',
   apiKey: '',
-  apiKeySaved: false,
+  apiKeysByModel: emptyApiKeysByModel(),
+  apiKeySaved: true,
   view: 'chat',
   settingsOpen: false,
   settingsSection: 'general',
@@ -146,7 +192,11 @@ const initialState = {
   projectInstructions: {},
   projectFiles: { nova: [defaultProjectFile] },
   projectFilesMigrated: true,
+  backendFilesMigrated: false,
   projectFileError: '',
+  selectedProjectFileIds: [],
+  conversationFiles: {},
+  conversationFileError: '',
   memoryModalScope: null,
   memoryModalEditing: false,
   isSending: false,
@@ -162,48 +212,50 @@ const initialState = {
   contextStats: {},
   memoryUpdatedAt: { global: '', projects: {}, sessions: {} },
   conversations: [
-    { id: 1, title: 'Tanpa judul', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Sesi mandiri', updated: 'Baru saja' },
-    { id: 2, title: 'AI game sederhana vs LLM untuk NPC', projectId: 'game', model: DEFAULT_MODEL_ID, preview: 'Eksperimen gameplay dan prompt', updated: '2 jam lalu' },
-    { id: 3, title: 'Perbedaan Claude di app vs API usage', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Catatan umum lintas proyek', updated: 'Kemarin' },
-    { id: 4, title: 'Desain arsitektur yang sudah siap MVP', projectId: 'nova', model: DEFAULT_MODEL_ID, preview: 'Backend, auth, dan billing', updated: 'Senin' },
+    { id: 1, title: 'Untitled', projectId: null, model: DEFAULT_MODEL_ID, preview: 'Standalone session', updated: 'Just now' },
+    { id: 2, title: 'Simple AI game vs LLMs for NPCs', projectId: 'game', model: DEFAULT_MODEL_ID, preview: 'Gameplay and prompt experiments', updated: '2 hours ago' },
+    { id: 3, title: 'Claude app vs API usage differences', projectId: null, model: DEFAULT_MODEL_ID, preview: 'General notes across projects', updated: 'Yesterday' },
+    { id: 4, title: 'MVP-ready architecture design', projectId: 'nova', model: DEFAULT_MODEL_ID, preview: 'Backend, auth, and billing', updated: 'Monday' },
   ],
   messagesByConversation: {
     1: [welcomeMessage],
-    2: [{ ...welcomeMessage, id: crypto.randomUUID(), text: 'Project AI Game Lab aktif. Mau kita rancang NPC, gameplay loop, atau prototype teknis dulu?' }],
-    3: [{ ...welcomeMessage, id: crypto.randomUUID(), text: 'Kita bisa bahas perbedaan Claude app dan API dari sisi fitur, pricing, latency, dan integrasi.' }],
-    4: [{ ...welcomeMessage, id: crypto.randomUUID(), text: 'Project NovaX aktif. Saya akan mempertahankan konteks edtech B2B saat menjawab.' }],
+    2: [{ ...welcomeMessage, id: crypto.randomUUID(), text: 'AI Game Lab is active. Should we design NPCs, the gameplay loop, or the technical prototype first?' }],
+    3: [{ ...welcomeMessage, id: crypto.randomUUID(), text: 'We can compare the Claude app and API by features, pricing, latency, and integration.' }],
+    4: [{ ...welcomeMessage, id: crypto.randomUUID(), text: 'NovaX is active. I will keep the B2B edtech context in mind when answering.' }],
   },
   artifacts: [
     {
       id: crypto.randomUUID(),
       type: 'doc',
-      name: 'brief-proyek.md',
-      detail: 'Contoh artefak awal yang bisa dibuka dan diunduh.',
-      content: '# Brief Proyek\n\nGunakan panel ini untuk menyimpan output Claude-like sebagai file nyata di browser.',
+      name: 'project-brief.md',
+      detail: 'Example starter artifact that can be opened and downloaded.',
+      content: '# Project Brief\n\nUse this panel to store Claude-like output as a real browser file.',
       createdAt: new Date().toISOString(),
     },
   ],
 };
 
 let state = loadState();
+let backendStateLoaded = false;
+let stateSaveTimer = null;
+let pendingPersistedState = null;
+let stateSaveChain = Promise.resolve();
 const app = document.querySelector('#app');
 
-function loadState() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return structuredClone(initialState);
-
-  try {
-    const stored = JSON.parse(raw);
-    const conversations = (stored.conversations || initialState.conversations).map((conversation) => ({
-      ...conversation,
-      model: defaultModels.some((model) => model.id === conversation.model) ? conversation.model : DEFAULT_MODEL_ID,
-    }));
-    return {
+function normalizePersistedState(stored = {}) {
+  const conversations = (stored.conversations || initialState.conversations).map((conversation) => ({
+    ...conversation,
+    model: defaultModels.some((model) => model.id === conversation.model) ? conversation.model : DEFAULT_MODEL_ID,
+  }));
+  return {
       ...structuredClone(initialState),
       ...stored,
       model: defaultModels.some((model) => model.id === stored.model) ? stored.model : DEFAULT_MODEL_ID,
       conversations,
-      apiKey: stored.apiKeySaved ? stored.apiKey || '' : '',
+      apiKey: stored.apiKey || '',
+      apiKeysByModel: normalizeStoredApiKeys(stored.apiKeysByModel, stored.apiKey || ''),
+      apiKeySaved: true,
+      tone: normalizeTone(stored.tone),
       isSending: false,
       isMemoryUpdating: false,
       error: '',
@@ -238,9 +290,9 @@ function loadState() {
             ...(stored.projectFiles || {}),
             nova: (stored.projectFiles?.nova?.length
               ? stored.projectFiles.nova
-              : (stored.artifacts || []).filter((artifact) => artifact.name === 'brief-proyek.md').map((artifact) => ({
+              : (stored.artifacts || []).filter((artifact) => ['brief-proyek.md', 'project-brief.md'].includes(artifact.name)).map((artifact) => ({
                   id: crypto.randomUUID(),
-                  name: artifact.name,
+                  name: artifact.name === 'brief-proyek.md' ? 'project-brief.md' : artifact.name,
                   type: 'text/markdown',
                   size: new Blob([artifact.content || '']).size,
                   content: artifact.content || '',
@@ -249,17 +301,85 @@ function loadState() {
                 }))),
           },
       projectFilesMigrated: true,
+      backendFilesMigrated: Boolean(stored.backendFilesMigrated),
       projectFileError: '',
+      selectedProjectFileIds: [],
+      conversationFiles: stored.conversationFiles || {},
+      conversationFileError: '',
       memoryModalScope: null,
       memoryModalEditing: false,
     };
+}
+
+function loadState() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return structuredClone(initialState);
+
+  try {
+    return normalizePersistedState(JSON.parse(raw));
   } catch {
     return structuredClone(initialState);
   }
 }
 
-function saveState() {
+const pendingLegacyProjectFiles = [];
+
+function fileMetadata(file) {
+  const { content, ...metadata } = file;
+  return metadata;
+}
+
+function metadataByScope(filesByScope = {}) {
+  return Object.fromEntries(Object.entries(filesByScope).map(([scopeId, files]) => (
+    [scopeId, (files || []).map(fileMetadata)]
+  )));
+}
+
+function prepareLoadedStateFiles() {
+  pendingLegacyProjectFiles.splice(0, pendingLegacyProjectFiles.length, ...Object.entries(state.projectFiles || {}).flatMap(([projectId, files]) => (
+    (files || [])
+      .filter((file) => typeof file.content === 'string')
+      .map((file) => ({ projectId, ...file }))
+  )));
+  state.projectFiles = metadataByScope(state.projectFiles);
+  state.conversationFiles = metadataByScope(state.conversationFiles);
+}
+
+function configuredApiKeysByModel() {
+  return compactApiKeysByModel(state.apiKeysByModel || {});
+}
+
+function apiKeysForFamily(familyId) {
+  return configuredApiKeysByModel()[familyId] || [];
+}
+
+function apiKeyInputsForFamily(familyId) {
+  const savedKeys = state.apiKeysByModel?.[familyId] || [];
+  return savedKeys.length ? savedKeys : [''];
+}
+
+function apiKeysForModelId(modelId = currentModelId()) {
+  return apiKeysForFamily(modelKeyFamilyForModel(modelId));
+}
+
+function hasApiKeysForModel(modelId = currentModelId()) {
+  return apiKeysForModelId(modelId).length > 0;
+}
+
+function apiKeysForRequest(_modelId = currentModelId()) {
+  return {};
+}
+
+function firstConfiguredApiKey() {
+  return modelKeyFamilies.flatMap((family) => apiKeysForFamily(family.id))[0] || '';
+}
+
+prepareLoadedStateFiles();
+
+function buildPersistedState() {
   const {
+    apiKey,
+    apiKeysByModel,
     connectorStatus,
     connectorBusy,
     skillFileError,
@@ -267,17 +387,68 @@ function saveState() {
     promptCommands,
     projectInstructionModalOpen,
     projectFileError,
+    selectedProjectFileIds,
+    conversationFileError,
     ...persistableState
   } = state;
   const persisted = {
     ...persistableState,
-    apiKey: state.apiKeySaved ? state.apiKey : '',
+    projectFiles: metadataByScope(state.projectFiles),
+    conversationFiles: metadataByScope(state.conversationFiles),
+    apiKey: firstConfiguredApiKey(),
+    apiKeysByModel: configuredApiKeysByModel(),
+    apiKeySaved: true,
     isSending: false,
     isMemoryUpdating: false,
     error: '',
     streamingMessageId: null,
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+  return persisted;
+}
+
+async function writeBackendState(persisted) {
+  const response = await fetch('/api/state', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ state: persisted }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || 'Failed to save backend state.');
+  return payload;
+}
+
+function persistStateNow() {
+  if (!backendStateLoaded) return Promise.resolve();
+  const persisted = pendingPersistedState || buildPersistedState();
+  pendingPersistedState = null;
+  stateSaveChain = stateSaveChain
+    .catch(() => {})
+    .then(() => writeBackendState(persisted))
+    .catch((error) => {
+      state.error = error.message || 'Failed to save backend state.';
+      render();
+    });
+  return stateSaveChain;
+}
+
+function flushStateSave() {
+  if (stateSaveTimer) {
+    clearTimeout(stateSaveTimer);
+    stateSaveTimer = null;
+  }
+  return persistStateNow();
+}
+
+function saveState({ immediate = false } = {}) {
+  pendingPersistedState = buildPersistedState();
+  if (!backendStateLoaded) return Promise.resolve();
+  if (immediate) return flushStateSave();
+  if (stateSaveTimer) clearTimeout(stateSaveTimer);
+  stateSaveTimer = setTimeout(() => {
+    stateSaveTimer = null;
+    persistStateNow();
+  }, 350);
+  return Promise.resolve();
 }
 
 function escapeHtml(value = '') {
@@ -337,10 +508,18 @@ function projectFiles(projectId) {
   return state.projectFiles?.[projectId] || [];
 }
 
-function selectedProjectFiles(projectId) {
-  return projectFiles(projectId)
+function selectedProjectFileIds(projectId) {
+  return projectFiles(projectId).map((file) => file.id);
+}
+
+function conversationFiles(conversationId = state.activeConversation) {
+  return state.conversationFiles?.[conversationId] || [];
+}
+
+function selectedConversationFileIds(conversationId = state.activeConversation) {
+  return conversationFiles(conversationId)
     .filter((file) => file.included !== false)
-    .map((file) => ({ name: file.name, type: file.type || 'text/plain', content: file.content }));
+    .map((file) => file.id);
 }
 
 function combineProjectMemory(project) {
@@ -350,7 +529,7 @@ function combineProjectMemory(project) {
     ...project,
     baseMemory: project.memory,
     systemPrompt: projectInstruction(project),
-    files: selectedProjectFiles(project.id),
+    fileIds: selectedProjectFileIds(project.id),
     generatedMemory,
     memory: [project.memory, generatedMemory && `Generated memory:\n${generatedMemory}`].filter(Boolean).join('\n\n'),
   };
@@ -406,7 +585,7 @@ function promptCommandOptions() {
       kind: 'skill',
       command: commandSlug(skill.name) || commandSlug(skill.id),
       label: skill.name,
-      description: skill.description || 'Jalankan skill ini untuk prompt berikutnya.',
+      description: skill.description || 'Run this skill for the next prompt.',
       target: skill.id,
     }));
   const toolCommands = promptToolCommands.map((tool) => ({
@@ -466,7 +645,7 @@ function setState(patch, persist = true) {
 }
 
 function titleFromPrompt(prompt) {
-  return prompt.length > 44 ? `${prompt.slice(0, 44)}…` : prompt || 'Tanpa judul';
+  return prompt.length > 44 ? `${prompt.slice(0, 44)}...` : prompt || 'Untitled';
 }
 
 function updateConversationPreview(prompt) {
@@ -474,9 +653,9 @@ function updateConversationPreview(prompt) {
     if (conversation.id !== state.activeConversation) return conversation;
     return {
       ...conversation,
-      title: conversation.title === 'Tanpa judul' ? titleFromPrompt(prompt) : conversation.title,
+      title: conversation.title === 'Untitled' ? titleFromPrompt(prompt) : conversation.title,
       preview: prompt.slice(0, 72),
-      updated: 'Baru saja',
+      updated: 'Just now',
       projectId: state.activeProject,
       model: conversation.model || currentModelId(),
     };
@@ -488,11 +667,11 @@ function detectActions(prompt, assistantText = '') {
   const fileSkill = activeSkills().find((skill) => skill.id === 'generate-file');
 
   if (fileSkill?.active && /(buat|generate|hasilkan|tulis).*(file|\.md|\.txt|\.json|\.js|dokumen)/i.test(prompt)) {
-    actions.push({ type: 'file', name: suggestFileName(prompt), detail: 'Artefak dibuat dari respons assistant dan bisa dibuka/diunduh.' });
+    actions.push({ type: 'file', name: suggestFileName(prompt), detail: 'Artifact created from the assistant response and available to open or download.' });
   }
 
   if (fileSkill?.active && assistantText && /(roadmap|prd|brief|spesifikasi|kode|dokumen)/i.test(prompt) && !actions.some((action) => action.type === 'file')) {
-    actions.push({ type: 'file', name: suggestFileName(prompt), detail: 'Output penting disimpan sebagai artefak untuk dipakai ulang.' });
+    actions.push({ type: 'file', name: suggestFileName(prompt), detail: 'Important output saved as a reusable artifact.' });
   }
 
   return actions;
@@ -513,7 +692,7 @@ function createArtifactFromAction(action, content) {
     type: action.type,
     name: action.name,
     detail: action.detail,
-    content: content || `# ${action.name}\n\nBelum ada konten.`,
+    content: content || `# ${action.name}\n\nNo content yet.`,
     createdAt: new Date().toISOString(),
   };
 }
@@ -563,20 +742,24 @@ function buildContextMessages() {
 
 function contextMeta() {
   const stats = currentContextStats();
-  return `Mengirim ${stats.sentMessages}/${stats.totalMessages} pesan (${stats.sentChars}/${stats.totalChars} karakter) + ${stats.hasSummary ? 'session summary' : 'tanpa summary'} + memory.`;
+  return `Sending ${stats.sentMessages}/${stats.totalMessages} messages (${stats.sentChars}/${stats.totalChars} characters) + ${stats.hasSummary ? 'session summary' : 'no summary'} + memory.`;
 }
 
 async function refreshTokenCount(triggers = selectedPromptTriggers()) {
-  if (!state.apiKey) return;
+  const model = currentModelId();
+  if (!hasApiKeysForModel(model)) return;
   try {
+    await flushStateSave();
     const response = await fetch('/api/count-tokens', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        apiKey: state.apiKey,
-        model: currentModelId(),
+        apiKeysByModel: apiKeysForRequest(model),
+        model,
         tone: state.tone,
         project: activeMemory(),
+        conversationId: String(state.activeConversation),
+        conversationFileIds: selectedConversationFileIds(),
         globalMemory: state.globalMemory,
         sessionSummary: currentSessionSummary(),
         contextMeta: contextMeta(),
@@ -613,12 +796,14 @@ function shouldSummarizeSession(messages = currentMessages(), conversationId = s
 }
 
 async function requestMemory(scope, existingMemory, context) {
+  const model = MEMORY_MODEL_ID;
+  await flushStateSave();
   const response = await fetch('/api/memory', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      apiKey: state.apiKey,
-      model: 'claude-haiku-4-5-20251001',
+      apiKeysByModel: apiKeysForRequest(model),
+      model,
       maxTokens: scope === 'session' ? 900 : 1800,
       scope,
       existingMemory,
@@ -627,7 +812,7 @@ async function requestMemory(scope, existingMemory, context) {
     }),
   });
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || 'Generate memory gagal.');
+  if (!response.ok) throw new Error(payload.error || 'Failed to generate memory.');
   return payload.memory || existingMemory || '';
 }
 
@@ -648,7 +833,7 @@ function markMemoryGenerated(scopes, { conversationId, projectId }) {
 }
 
 async function generateMemories(scopes = ['session', 'global', 'project'], force = false) {
-  if (state.isMemoryUpdating || !state.apiKey) return;
+  if (state.isMemoryUpdating || !hasApiKeysForModel(MEMORY_MODEL_ID)) return;
   const conversationId = state.activeConversation;
   const messages = [...currentMessages()];
   const project = activeMemory();
@@ -679,7 +864,7 @@ async function generateMemories(scopes = ['session', 'global', 'project'], force
   results.forEach((result, index) => {
     const scope = jobs[index].scope;
     if (result.status === 'rejected') {
-      failures.push(result.reason?.message || `${scope} memory gagal.`);
+      failures.push(result.reason?.message || `${scope} memory failed.`);
       return;
     }
     completed.push(scope);
@@ -709,10 +894,12 @@ async function generateMemories(scopes = ['session', 'global', 'project'], force
 function createLocalFallback(prompt) {
   const memory = activeMemory();
   const actions = detectActions(prompt);
+  const family = modelKeyFamilies.find((item) => item.id === modelKeyFamilyForModel(currentModelId()));
+  const modelLabel = family?.label || modelById(currentModelId()).label;
   const text = [
-    'Mode lokal aktif karena API key belum tersedia atau request gagal.',
-    memory ? `Memori proyek yang dipakai: ${memory.name} — ${memory.memory}` : '',
-    'Tambahkan API key Claude melalui Pengaturan agar jawaban datang dari backend proxy `/api/chat-stream` dan model yang dipilih.',
+    `Local mode is active because the ${modelLabel} API key is unavailable or every ${modelLabel} key failed.`,
+    memory ? `Project memory in use: ${memory.name} - ${memory.memory}` : '',
+    'Add the model API key in Settings so answers come from the `/api/chat-stream` backend proxy and use the selected model.',
   ].filter(Boolean).join('\n\n');
   return { text, actions };
 }
@@ -731,7 +918,7 @@ async function connectorRequest(path, options = {}) {
     headers: { 'content-type': 'application/json', ...(options.headers || {}) },
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Connector request gagal (${response.status}).`);
+  if (!response.ok) throw new Error(data.error || `Connector request failed (${response.status}).`);
   return data;
 }
 
@@ -750,7 +937,7 @@ async function connectAtlassian() {
   const email = document.querySelector('#atlassian-email')?.value.trim() || '';
   const apiToken = document.querySelector('#atlassian-api-token')?.value.trim() || '';
   if (!baseUrl || !email || !apiToken) {
-    setConnectorState({ error: 'Isi site URL, email, dan API token terlebih dahulu.' });
+    setConnectorState({ error: 'Enter the site URL, email, and API token first.' });
     return;
   }
   state.connectorBusy = 'connect';
@@ -795,14 +982,18 @@ async function disconnectAtlassian() {
 }
 
 async function requestClaude(prompt, assistantId, conversationId, triggers = {}) {
+  const requestModel = currentModelId();
+  await flushStateSave();
   const response = await fetch('/api/chat-stream', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      apiKey: state.apiKey,
-      model: currentModelId(),
+      apiKeysByModel: apiKeysForRequest(requestModel),
+      model: requestModel,
       tone: state.tone,
       project: activeMemory(),
+      conversationId: String(conversationId),
+      conversationFileIds: selectedConversationFileIds(conversationId),
       globalMemory: state.globalMemory,
       sessionSummary: currentSessionSummary(),
       contextMeta: contextMeta(),
@@ -816,7 +1007,7 @@ async function requestClaude(prompt, assistantId, conversationId, triggers = {})
   if (!response.ok || !response.body) {
     let payload = {};
     try { payload = await response.json(); } catch {}
-    throw new Error(payload.error || 'Claude API gagal merespons.');
+    throw new Error(payload.error || 'Claude API failed to respond.');
   }
 
   const reader = response.body.getReader();
@@ -858,7 +1049,7 @@ async function requestClaude(prompt, assistantId, conversationId, triggers = {})
       if (payload.text && !text) text = payload.text;
     }
     if (eventName === 'error') {
-      throw new Error(payload.error || 'Claude API gagal merespons.');
+      throw new Error(payload.error || 'Claude API failed to respond.');
     }
     eventName = '';
   }
@@ -902,6 +1093,9 @@ async function addMessage() {
     role: 'user',
     text: prompt,
     triggerCommands: (state.promptCommands || []).map(({ kind, command, label }) => ({ kind, command, label })),
+    attachedFiles: conversationFiles(conversationId)
+      .filter((file) => file.included !== false)
+      .map(({ id, name, type, size }) => ({ id, name, type, size })),
     createdAt: new Date().toISOString(),
   };
   const assistantId = crypto.randomUUID();
@@ -947,12 +1141,13 @@ async function addMessage() {
 
 function newConversation() {
   const id = Date.now();
-  state.conversations = [{ id, title: 'Tanpa judul', projectId: null, model: currentModelId(), preview: 'Sesi baru', updated: 'Baru saja' }, ...state.conversations];
+  state.conversations = [{ id, title: 'Untitled', projectId: null, model: currentModelId(), preview: 'New session', updated: 'Just now' }, ...state.conversations];
   state.messagesByConversation[id] = [{
     ...welcomeMessage,
     id: crypto.randomUUID(),
-    text: 'Apa yang bisa saya bantu?',
+    text: 'How can I help?',
   }];
+  state.conversationFiles = { ...(state.conversationFiles || {}), [id]: [] };
   state.activeConversation = id;
   state.activeProject = null;
   state.view = 'chat';
@@ -983,6 +1178,7 @@ function branchConversation(throughMessageId = null) {
 
   state.conversations = [branch.conversation, ...state.conversations];
   state.messagesByConversation = { ...state.messagesByConversation, [id]: branch.messages };
+  state.conversationFiles = { ...(state.conversationFiles || {}), [id]: [] };
   state.sessionSummaries = { ...state.sessionSummaries, [id]: '' };
   state.contextStats = { ...state.contextStats, [id]: { lastMemoryTurn: userTurnCount(branch.messages), summarizedThrough: 0 } };
   state.memoryUpdatedAt = {
@@ -1030,8 +1226,73 @@ function formatFileSize(bytes = 0) {
   return `${Math.round(bytes / (1024 * 102.4)) / 10} MB`;
 }
 
+function formatLineCount(lines = 0) {
+  return Number(lines || 0).toLocaleString('en-US');
+}
+
 function projectFileExtension(name = '') {
   return String(name).split('.').pop()?.toLowerCase() || '';
+}
+
+async function fileApi(path, options = {}) {
+  const response = await fetch(path, options);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `File request failed (${response.status}).`);
+  return payload;
+}
+
+async function listStoredFiles(scope, scopeId) {
+  const query = new URLSearchParams({ scope, scopeId: String(scopeId) });
+  const payload = await fileApi(`/api/files?${query}`);
+  return payload.files || [];
+}
+
+async function uploadStoredFile(file, scope, scopeId) {
+  const payload = await fileApi('/api/files', {
+    method: 'POST',
+    headers: {
+      'content-type': file.type || 'application/octet-stream',
+      'x-file-name': encodeURIComponent(file.name),
+      'x-file-scope': scope,
+      'x-file-scope-id': encodeURIComponent(String(scopeId)),
+      'x-file-included': 'true',
+    },
+    body: file,
+  });
+  return payload.file;
+}
+
+async function updateStoredFile(fileId, included) {
+  const payload = await fileApi(`/api/files/${encodeURIComponent(fileId)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ included }),
+  });
+  return payload.file;
+}
+
+async function deleteStoredFile(fileId) {
+  await fileApi(`/api/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+}
+
+async function loadProjectFiles(projectId, shouldRender = true) {
+  const files = await listStoredFiles('project', projectId);
+  state.projectFiles = { ...(state.projectFiles || {}), [projectId]: files };
+  const availableIds = new Set(files.map((file) => file.id));
+  state.selectedProjectFileIds = (state.selectedProjectFileIds || []).filter((id) => availableIds.has(id));
+  state.projectFileError = '';
+  saveState();
+  if (shouldRender) render();
+  return files;
+}
+
+async function loadConversationFiles(conversationId = state.activeConversation, shouldRender = true) {
+  const files = await listStoredFiles('conversation', conversationId);
+  state.conversationFiles = { ...(state.conversationFiles || {}), [conversationId]: files };
+  state.conversationFileError = '';
+  saveState();
+  if (shouldRender) render();
+  return files;
 }
 
 function openProjectInstructionModal() {
@@ -1062,86 +1323,123 @@ async function importProjectFiles(fileList) {
   if (!project) return;
   const incoming = [...(fileList || [])];
   if (!incoming.length) return;
-  const current = projectFiles(project.id);
-  const incomingNames = new Set(incoming.map((file) => file.name.toLowerCase()));
-  const retained = current.filter((file) => !incomingNames.has(file.name.toLowerCase()));
-  if (retained.length + incoming.length > MAX_PROJECT_FILES) {
-    setState({ projectFileError: `Maksimal ${MAX_PROJECT_FILES} file per project.` }, false);
-    return;
-  }
 
-  const invalid = incoming.find((file) => (
-    !PROJECT_FILE_EXTENSIONS.has(projectFileExtension(file.name))
-    || file.size > MAX_PROJECT_FILE_BYTES
-  ));
+  const invalid = incoming.find((file) => !PROJECT_FILE_EXTENSIONS.has(projectFileExtension(file.name)));
   if (invalid) {
-    const reason = invalid.size > MAX_PROJECT_FILE_BYTES
-      ? `lebih besar dari ${formatFileSize(MAX_PROJECT_FILE_BYTES)}`
-      : 'bukan file teks yang didukung';
-    setState({ projectFileError: `${invalid.name} ${reason}.` }, false);
-    return;
-  }
-  const totalBytes = retained.reduce((total, file) => total + Number(file.size || file.content?.length || 0), 0)
-    + incoming.reduce((total, file) => total + file.size, 0);
-  if (totalBytes > MAX_PROJECT_TOTAL_BYTES) {
-    setState({ projectFileError: `Total file context maksimal ${formatFileSize(MAX_PROJECT_TOTAL_BYTES)} per project.` }, false);
+    setState({ projectFileError: `${invalid.name} is not a supported text file.` }, false);
     return;
   }
 
   try {
-    const previousProjectFiles = state.projectFiles;
-    const imported = await Promise.all(incoming.map(async (file) => ({
-      id: crypto.randomUUID(),
-      name: file.name,
-      type: file.type || 'text/plain',
-      size: file.size,
-      content: await file.text(),
-      included: true,
-      addedAt: new Date().toISOString(),
-    })));
-    state.projectFiles = {
-      ...(state.projectFiles || {}),
-      [project.id]: [
-        ...retained,
-        ...imported,
-      ],
-    };
-    state.projectFileError = '';
-    try {
-      saveState();
-    } catch {
-      state.projectFiles = previousProjectFiles;
-      throw new Error('Browser storage penuh.');
-    }
-    render();
+    await Promise.all(incoming.map((file) => uploadStoredFile(file, 'project', project.id)));
+    await loadProjectFiles(project.id);
   } catch (error) {
-    setState({ projectFileError: error.message || 'File tidak dapat dibaca.' }, false);
+    setState({ projectFileError: error.message || 'Could not upload the file.' }, false);
   }
 }
 
-function toggleProjectFileContext(fileId) {
+function toggleProjectFileSelection(fileId) {
+  const selected = new Set(state.selectedProjectFileIds || []);
+  if (selected.has(fileId)) selected.delete(fileId);
+  else selected.add(fileId);
+  state.selectedProjectFileIds = [...selected];
+  render();
+}
+
+function toggleAllProjectFileSelection() {
   const project = projectById(state.activeProject);
   if (!project) return;
+  const allIds = projectFiles(project.id).map((file) => file.id);
+  const selected = new Set(state.selectedProjectFileIds || []);
+  state.selectedProjectFileIds = allIds.length && allIds.every((id) => selected.has(id)) ? [] : allIds;
+  render();
+}
+
+function clearProjectFileSelection() {
+  state.selectedProjectFileIds = [];
+  render();
+}
+
+async function removeProjectFile(fileId) {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  try {
+    await deleteStoredFile(fileId);
+    state.projectFiles = {
+      ...(state.projectFiles || {}),
+      [project.id]: projectFiles(project.id).filter((file) => file.id !== fileId),
+    };
+    state.selectedProjectFileIds = (state.selectedProjectFileIds || []).filter((id) => id !== fileId);
+    state.projectFileError = '';
+    saveState();
+    render();
+  } catch (error) {
+    setState({ projectFileError: error.message || 'Failed to delete the file.' }, false);
+  }
+}
+
+async function removeSelectedProjectFiles() {
+  const project = projectById(state.activeProject);
+  const selectedIds = [...(state.selectedProjectFileIds || [])];
+  if (!project || !selectedIds.length) return;
+  const results = await Promise.allSettled(selectedIds.map((fileId) => deleteStoredFile(fileId)));
+  const removedIds = new Set(results.flatMap((result, index) => (result.status === 'fulfilled' ? [selectedIds[index]] : [])));
   state.projectFiles = {
     ...(state.projectFiles || {}),
-    [project.id]: projectFiles(project.id).map((file) => (
-      file.id === fileId ? { ...file, included: file.included === false } : file
-    )),
+    [project.id]: projectFiles(project.id).filter((file) => !removedIds.has(file.id)),
   };
+  state.selectedProjectFileIds = selectedIds.filter((id) => !removedIds.has(id));
+  const failedCount = results.length - removedIds.size;
+  state.projectFileError = failedCount ? `${failedCount} file(s) failed to delete.` : '';
   saveState();
   render();
 }
 
-function removeProjectFile(fileId) {
-  const project = projectById(state.activeProject);
-  if (!project) return;
-  state.projectFiles = {
-    ...(state.projectFiles || {}),
-    [project.id]: projectFiles(project.id).filter((file) => file.id !== fileId),
-  };
-  state.projectFileError = '';
-  saveState();
-  render();
+async function importConversationFiles(fileList) {
+  const incoming = [...(fileList || [])];
+  if (!incoming.length) return;
+  const invalid = incoming.find((file) => !PROJECT_FILE_EXTENSIONS.has(projectFileExtension(file.name)));
+  if (invalid) {
+    setState({ conversationFileError: `${invalid.name} is not a supported text file.` }, false);
+    return;
+  }
+  try {
+    await Promise.all(incoming.map((file) => uploadStoredFile(file, 'conversation', state.activeConversation)));
+    await loadConversationFiles(state.activeConversation);
+  } catch (error) {
+    setState({ conversationFileError: error.message || 'Could not upload the file.' }, false);
+  }
+}
+
+async function toggleConversationFileContext(fileId) {
+  const current = conversationFiles().find((file) => file.id === fileId);
+  if (!current) return;
+  try {
+    const updated = await updateStoredFile(fileId, current.included === false);
+    state.conversationFiles = {
+      ...(state.conversationFiles || {}),
+      [state.activeConversation]: conversationFiles().map((file) => (file.id === fileId ? updated : file)),
+    };
+    saveState();
+    render();
+  } catch (error) {
+    setState({ conversationFileError: error.message || 'Failed to update the context file.' }, false);
+  }
+}
+
+async function removeConversationFile(fileId) {
+  try {
+    await deleteStoredFile(fileId);
+    state.conversationFiles = {
+      ...(state.conversationFiles || {}),
+      [state.activeConversation]: conversationFiles().filter((file) => file.id !== fileId),
+    };
+    state.conversationFileError = '';
+    saveState();
+    render();
+  } catch (error) {
+    setState({ conversationFileError: error.message || 'Failed to delete the file.' }, false);
+  }
 }
 
 
@@ -1280,7 +1578,7 @@ function parseUploadedSkill(fileName, source) {
 async function importSkillFile(file) {
   if (!file) return;
   if (!/\.md$/i.test(file.name)) {
-    setState({ skillFileError: 'Skill harus diunggah sebagai file Markdown (.md).' }, false);
+    setState({ skillFileError: 'Upload skills as Markdown (.md) files.' }, false);
     return;
   }
   const content = await file.text();
@@ -1292,7 +1590,7 @@ async function replaceSelectedSkillFile(file) {
   const skill = selectedSkill();
   if (!skill || !file) return;
   if (!/\.md$/i.test(file.name)) {
-    setState({ skillFileError: 'Skill pengganti harus berupa file Markdown (.md).' }, false);
+    setState({ skillFileError: 'Replacement skills must be Markdown (.md) files.' }, false);
     return;
   }
   const content = await file.text();
@@ -1335,8 +1633,54 @@ function phIcon(name, className = '') {
 }
 
 function formatMemoryTime(value) {
-  if (!value) return 'Belum pernah';
-  return new Date(value).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' });
+  if (!value) return 'Never';
+  return new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function validApiKeyFamily(familyId) {
+  return modelKeyFamilies.some((family) => family.id === familyId);
+}
+
+function setApiKeyValue(familyId, index, value) {
+  if (!validApiKeyFamily(familyId)) return;
+  const rows = [...apiKeyInputsForFamily(familyId)];
+  rows[Number(index)] = String(value || '').trim();
+  state.apiKeysByModel = {
+    ...(state.apiKeysByModel || {}),
+    [familyId]: rows,
+  };
+  saveState({ immediate: true });
+}
+
+function focusApiKeyInput(familyId, index) {
+  queueMicrotask(() => {
+    document.querySelector(`[data-api-key-family="${familyId}"][data-api-key-index="${index}"]`)?.focus();
+  });
+}
+
+function addApiKeyRow(familyId) {
+  if (!validApiKeyFamily(familyId)) return;
+  const rows = apiKeyInputsForFamily(familyId);
+  const nextRows = rows.length === 1 && !rows[0] ? ['', ''] : [...rows, ''];
+  state.apiKeysByModel = {
+    ...(state.apiKeysByModel || {}),
+    [familyId]: nextRows,
+  };
+  saveState();
+  render();
+  focusApiKeyInput(familyId, nextRows.length - 1);
+}
+
+function removeApiKeyRow(familyId, index) {
+  if (!validApiKeyFamily(familyId)) return;
+  const nextRows = apiKeyInputsForFamily(familyId).filter((_, rowIndex) => rowIndex !== Number(index));
+  state.apiKeysByModel = {
+    ...(state.apiKeysByModel || {}),
+    [familyId]: nextRows.length ? nextRows : [],
+  };
+  saveState();
+  render();
+  focusApiKeyInput(familyId, Math.max(0, Number(index) - 1));
 }
 
 function saveSettings() {
@@ -1508,10 +1852,11 @@ function renderMessages() {
       <div class="message-avatar">${message.role === 'assistant' ? '<img class="claude-mark message-mark" src="/src/assets/claude-spark-clay.svg" alt="" />' : 'N'}</div>
       <div class="message-body">
         ${message.triggerCommands?.length ? `<div class="message-trigger-list">${message.triggerCommands.map((command) => `<span>/${escapeHtml(command.command)}</span>`).join('')}</div>` : ''}
+        ${message.attachedFiles?.length ? `<div class="message-file-list">${message.attachedFiles.map((file) => `<span>${phIcon('paperclip')} ${escapeHtml(file.name)}</span>`).join('')}</div>` : ''}
         <p>${escapeHtml(message.text)}</p>
         ${message.usage ? `<small class="usage">${escapeHtml(message.model || state.model)} · input ${message.usage.input_tokens ?? 0} · output ${message.usage.output_tokens ?? 0}</small>` : ''}
         ${renderActions(message)}
-        ${message.role === 'assistant' && !state.isSending ? `<button class="branch-message" data-branch-message="${message.id}">${icon('fork_right')} Branch dari sini</button>` : ''}
+        ${message.role === 'assistant' && !state.isSending ? `<button class="branch-message" data-branch-message="${message.id}">${icon('fork_right')} Branch from here</button>` : ''}
       </div>
     </article>
   `).join('');
@@ -1527,23 +1872,40 @@ function renderPromptCommandChips() {
   `).join('');
 }
 
+function renderConversationFileChips() {
+  return conversationFiles().map((file) => `
+    <div class="chat-file-chip ${file.included === false ? 'excluded' : ''}">
+      <button class="chat-file-context" data-conversation-file-toggle="${file.id}" aria-pressed="${file.included !== false}" title="${file.included === false ? 'Add to AI context' : 'Used as AI context'}">
+        ${phIcon(file.included === false ? 'circle' : 'check-circle')}
+        <span>${escapeHtml(file.name)}</span>
+        <small>${formatFileSize(file.size)}</small>
+      </button>
+      <button class="chat-file-remove" data-conversation-file-delete="${file.id}" aria-label="Delete ${escapeHtml(file.name)}">${phIcon('x')}</button>
+    </div>
+  `).join('');
+}
+
 function renderComposer({ project = false } = {}) {
   const hasCommands = Boolean(state.promptCommands?.length);
+  const hasFiles = Boolean(conversationFiles().length);
   return `
-    <div class="composer ${project ? 'project-composer' : ''} ${hasCommands ? 'has-prompt-commands' : ''}">
+    <div class="composer ${project ? 'project-composer' : ''} ${hasCommands || hasFiles ? 'has-prompt-commands' : ''}">
       <div class="slash-command-menu" id="slash-command-menu" role="listbox" aria-label="Skill and tool commands" hidden></div>
       ${hasCommands ? `<div class="prompt-command-chips">${renderPromptCommandChips()}</div>` : ''}
+      ${hasFiles ? `<div class="chat-file-chips">${renderConversationFileChips()}</div>` : ''}
+      ${state.conversationFileError ? `<div class="composer-file-error">${escapeHtml(state.conversationFileError)}</div>` : ''}
       <textarea id="prompt-input" placeholder="${project ? 'Type / for skills and tools' : 'How can I help you today? Type / for commands'}" ${state.isSending ? 'disabled' : ''}>${escapeHtml(state.promptDraft || '')}</textarea>
       <div class="composer-controls">
-        <button class="icon-button" data-quick="Lampirkan konteks berikut:" aria-label="Add">${phIcon('plus')}</button>
+        <button class="icon-button" data-action="upload-chat-files" aria-label="Upload files">${phIcon('plus')}</button>
+        <input class="chat-file-upload-input" type="file" multiple accept=".md,.txt,.json,.csv,.js,.jsx,.ts,.tsx,.html,.css,.xml,.yaml,.yml,text/*,application/json" aria-label="Upload conversation context files" />
         <div class="composer-options">
-          <select id="model-select" aria-label="Pilih model">
+          <select id="model-select" aria-label="Choose model">
             ${defaultModels.map((model) => `<option value="${model.id}" ${model.id === currentModelId() ? 'selected' : ''}>${escapeHtml(model.label)}</option>`).join('')}
           </select>
-          <select id="tone-select" aria-label="Pilih intensitas berpikir">
-            ${['Rendah', 'Sedang', 'Tinggi'].map((tone) => `<option ${tone === state.tone ? 'selected' : ''}>${tone}</option>`).join('')}
+          <select id="tone-select" aria-label="Choose thinking intensity">
+            ${toneOptions.map((tone) => `<option ${tone === state.tone ? 'selected' : ''}>${tone}</option>`).join('')}
           </select>
-          <button class="icon-button" data-quick="Transkrip voice saya:" aria-label="Voice">${phIcon('microphone')}</button>
+          <button class="icon-button" data-quick="Transcribe my voice:" aria-label="Voice">${phIcon('microphone')}</button>
           <button class="send-button ${project ? 'project-send' : 'chat-send'}" data-action="send-message" aria-label="Send" ${state.isSending ? 'disabled' : ''}>${state.isSending ? phIcon('stop') : project ? phIcon('paper-plane-right') : phIcon('chart-bar')}</button>
         </div>
       </div>
@@ -1568,7 +1930,7 @@ function renderChatView() {
             <h1>${escapeHtml(currentConversation()?.title || 'Chat')}</h1>
             <button data-action="branch-chat" class="secondary-button">${icon('fork_right')} Branch</button>
           </div>
-          <div class="messages" id="messages">${renderMessages()}${state.isSending ? '<div class="typing">Claude sedang berpikir…</div>' : ''}</div>
+          <div class="messages" id="messages">${renderMessages()}${state.isSending ? '<div class="typing">Claude is thinking...</div>' : ''}</div>
         ` : `
           <div class="greeting">
             <img class="claude-mark greeting-mark" src="/src/assets/claude-spark-clay.svg" alt="Claude" />
@@ -1579,10 +1941,10 @@ function renderChatView() {
         ${renderComposer()}
         ${hasUserMessage ? '' : `
           <div class="suggestion-chips">
-            <button data-quick="Susun strategi untuk:">${icon('monitoring')}<span>Strategize</span></button>
-            <button data-quick="Tulis kode untuk:">${icon('code')}<span>Code</span></button>
-            <button data-quick="Ajari saya tentang:">${icon('school')}<span>Learn</span></button>
-            <button data-quick="Bantu saya menulis:">${icon('edit')}<span>Write</span></button>
+            <button data-quick="Build a strategy for:">${icon('monitoring')}<span>Strategize</span></button>
+            <button data-quick="Write code for:">${icon('code')}<span>Code</span></button>
+            <button data-quick="Teach me about:">${icon('school')}<span>Learn</span></button>
+            <button data-quick="Help me write:">${icon('edit')}<span>Write</span></button>
           </div>
         `}
       </section>
@@ -1647,24 +2009,38 @@ function renderProjectDetailView() {
           <small>Last message ${escapeHtml(conversation.updated)}</small>
         </button>
       `).join('')
-    : '<p class="empty-copy">Belum ada chat di proyek ini.</p>';
+    : '<p class="empty-copy">No chats in this project yet.</p>';
   const instruction = projectInstruction(project);
-  const files = projectFiles(project.id).map((file) => `
-    <article class="project-file ${file.included === false ? '' : 'in-context'}">
-      <div class="project-file-heading">
-        <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
-        <button data-project-file-delete="${file.id}" aria-label="Delete ${escapeHtml(file.name)}">${phIcon('trash')}</button>
-      </div>
-      <div class="project-file-meta">
-        <small>${file.content.split('\n').length} lines · ${formatFileSize(file.size)}</small>
-        <b>${escapeHtml(projectFileExtension(file.name).toUpperCase() || 'FILE')}</b>
-      </div>
-      <button class="project-file-context-toggle" data-project-file-toggle="${file.id}" aria-pressed="${file.included !== false}">
-        ${phIcon(file.included === false ? 'circle' : 'check-circle')}
-        <span>${file.included === false ? 'Add to context' : 'In context'}</span>
+  const projectFileList = projectFiles(project.id);
+  const availableFileIds = new Set(projectFileList.map((file) => file.id));
+  const selectedFileIds = new Set((state.selectedProjectFileIds || []).filter((id) => availableFileIds.has(id)));
+  const selectedCount = selectedFileIds.size;
+  const allFilesSelected = Boolean(projectFileList.length)
+    && projectFileList.every((file) => selectedFileIds.has(file.id));
+  const selectionToolbar = selectedCount ? `
+    <div class="project-file-selection-toolbar">
+      <button class="project-file-select-all ${allFilesSelected ? 'selected' : ''}" data-action="toggle-all-project-files" aria-label="${allFilesSelected ? 'Deselect all files' : 'Select all files'}" aria-pressed="${allFilesSelected}">
+        ${allFilesSelected ? phIcon('check') : ''}
       </button>
-    </article>
-  `).join('');
+      <span>${selectedCount} selected</span>
+      <button class="project-file-bulk-delete" data-action="delete-selected-project-files" aria-label="Delete selected files">${phIcon('trash')}</button>
+      <button class="project-file-selection-close" data-action="clear-project-file-selection" aria-label="Close file selection">${phIcon('x')}</button>
+    </div>
+  ` : '';
+  const files = projectFileList.map((file) => {
+    const selected = selectedFileIds.has(file.id);
+    return `
+      <article class="project-file ${selected ? 'selected' : ''}">
+        <button class="project-file-delete" data-project-file-delete="${file.id}" aria-label="Delete ${escapeHtml(file.name)}">${phIcon('x')}</button>
+        <strong title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</strong>
+        <small>${formatLineCount(file.lineCount)} lines</small>
+        <b>${escapeHtml(projectFileExtension(file.name).toUpperCase() || 'FILE')}</b>
+        <button class="project-file-select ${selected ? 'selected' : ''}" data-project-file-select="${file.id}" aria-label="${selected ? 'Deselect' : 'Select'} ${escapeHtml(file.name)}" aria-pressed="${selected}">
+          ${selected ? phIcon('check') : ''}
+        </button>
+      </article>
+    `;
+  }).join('');
   return `
     <main class="project-detail-view">
       <button class="back-link" data-action="show-projects">${icon('arrow_back')} All projects</button>
@@ -1683,9 +2059,10 @@ function renderProjectDetailView() {
             <div class="context-card-heading"><h2>Instructions</h2><button class="icon-button" data-action="open-project-instructions" aria-label="Edit project instructions">${icon('add')}</button></div>
             <p class="italic">${escapeHtml(instruction || 'Add instructions to tailor Claude’s responses')}</p>
           </section>
-          <section class="context-card files-context">
+          <section class="context-card files-context ${selectedCount ? 'selection-active' : ''}">
             <div class="context-card-heading"><h2>Files</h2><button class="icon-button" data-action="upload-project-files" aria-label="Upload project files">${icon('add')}</button></div>
             ${state.projectFileError ? `<div class="project-file-error">${phIcon('warning-circle')}<span>${escapeHtml(state.projectFileError)}</span></div>` : ''}
+            ${selectionToolbar}
             <div class="project-files">${files || '<p class="empty-copy">No files yet.</p>'}</div>
             <input class="project-file-upload-input" type="file" multiple accept=".md,.txt,.json,.csv,.js,.jsx,.ts,.tsx,.html,.css,.xml,.yaml,.yml,text/*,application/json" aria-label="Upload project context files" />
           </section>
@@ -1696,8 +2073,8 @@ function renderProjectDetailView() {
 }
 
 function formatConnectorCheckTime(value) {
-  if (!value) return 'Belum diuji';
-  return new Intl.DateTimeFormat('id-ID', {
+  if (!value) return 'Not tested';
+  return new Intl.DateTimeFormat('en-US', {
     day: 'numeric',
     month: 'short',
     hour: '2-digit',
@@ -1735,7 +2112,7 @@ function renderConnectorsPanel() {
         <div>
           <p class="connectors-eyebrow">Workspace tools</p>
           <h2>Connectors</h2>
-          <p>Hubungkan Atlassian agar chat dapat mencari, membaca, dan memperbarui Jira serta Confluence.</p>
+          <p>Connect Atlassian so chat can search, read, and update Jira and Confluence.</p>
         </div>
         <span class="connector-overall-status ${connector.connected ? 'connected' : ''}">
           <i></i>${connector.loading ? 'Checking...' : connector.connected ? 'Atlassian connected' : 'Not connected'}
@@ -1747,7 +2124,7 @@ function renderConnectorsPanel() {
           <div class="atlassian-mark">${phIcon('circles-three-plus')}</div>
           <div>
             <h3>Atlassian</h3>
-            <p>Satu koneksi aman untuk Jira dan Confluence Cloud.</p>
+            <p>One secure connection for Jira and Confluence Cloud.</p>
           </div>
         </div>
 
@@ -1792,7 +2169,7 @@ function renderConnectorsPanel() {
               <input id="atlassian-api-token" type="password" placeholder="Paste your Atlassian API token" autocomplete="off" />
             </label>
             <div class="connector-form-footer">
-              <p>${phIcon('shield-check')} Token hanya disimpan di memori proses server dan tidak masuk ke browser storage.</p>
+              <p>${phIcon('shield-check')} Tokens are stored only in server process memory and never in browser storage.</p>
               <button class="primary-dark" data-action="connect-atlassian" ${busy || connector.loading ? 'disabled' : ''}>
                 ${busy === 'connect' ? `${phIcon('spinner-gap', 'spin')} Connecting...` : 'Connect Atlassian'}
               </button>
@@ -1805,19 +2182,19 @@ function renderConnectorsPanel() {
 
       <div class="connector-products-heading">
         <h3>Available tools</h3>
-        <p>Kedua tool memakai akun Atlassian yang sama.</p>
+        <p>Both tools use the same Atlassian account.</p>
       </div>
       <div class="connector-products">
         ${renderConnectorProduct({
           iconName: 'check-square-offset',
           name: 'Jira',
-          description: 'Cari issue, baca detail ticket, buat issue baru, ubah field, dan tambahkan komentar.',
+          description: 'Search issues, read ticket details, create issues, update fields, and add comments.',
           capabilities: ['Search & read', 'Create & update', 'Add comments'],
         })}
         ${renderConnectorProduct({
           iconName: 'files',
           name: 'Confluence',
-          description: 'Cari halaman, baca isi workspace, dan perbarui halaman dengan instruksi eksplisit.',
+          description: 'Search pages, read workspace content, and update pages with explicit instructions.',
           capabilities: ['Search pages', 'Read content', 'Update pages'],
         })}
       </div>
@@ -1955,13 +2332,13 @@ function renderProjectInstructionModal() {
         <header>
           <div>
             <h2>Project instructions</h2>
-            <p>Instruksi ini selalu diterapkan pada chat di project ${escapeHtml(project.name)}.</p>
+            <p>These instructions are always applied to chats in ${escapeHtml(project.name)}.</p>
           </div>
           <button data-action="close-project-instructions" aria-label="Close project instructions">${phIcon('x')}</button>
         </header>
         <label>
           <span>Instructions</span>
-          <textarea id="project-instruction-editor" placeholder="Contoh: Gunakan Bahasa Indonesia, fokus pada edtech B2B, target sekolah dan bootcamp.">${escapeHtml(projectInstruction(project))}</textarea>
+          <textarea id="project-instruction-editor" placeholder="Example: Use Bahasa Indonesia, focus on B2B edtech, and target schools and bootcamps.">${escapeHtml(projectInstruction(project))}</textarea>
         </label>
         <footer>
           <button data-action="close-project-instructions">Cancel</button>
@@ -1998,6 +2375,46 @@ function renderArtifactsView() {
   `;
 }
 
+function renderApiKeySettings() {
+  return modelKeyFamilies.map((family) => {
+    const rows = apiKeyInputsForFamily(family.id);
+    const configuredCount = apiKeysForFamily(family.id).length;
+    return `
+      <section class="api-key-family">
+        <header class="api-key-family-header">
+          <span>
+            <strong>${escapeHtml(family.label)}</strong>
+            <small>${escapeHtml(family.detail)}</small>
+          </span>
+          <em>${configuredCount} key</em>
+        </header>
+        <div class="api-key-list">
+          ${rows.map((key, index) => `
+            <div class="api-key-row">
+              <input
+                class="api-key-input"
+                type="password"
+                placeholder="sk-ant-..."
+                value="${escapeHtml(key)}"
+                data-api-key-family="${family.id}"
+                data-api-key-index="${index}"
+                aria-label="API key ${escapeHtml(family.label)} ${index + 1}"
+              />
+              <button
+                class="icon-button api-key-remove"
+                data-api-key-remove="${family.id}:${index}"
+                aria-label="Remove API key ${escapeHtml(family.label)} ${index + 1}"
+                ${rows.length === 1 && !key ? 'disabled' : ''}
+              >${phIcon('x')}</button>
+            </div>
+          `).join('')}
+        </div>
+        <button class="api-key-add" data-api-key-add="${family.id}">${phIcon('plus')} Add ${escapeHtml(family.label)} key</button>
+      </section>
+    `;
+  }).join('');
+}
+
 function renderSettingsContent() {
   if (state.settingsSection !== 'general') {
     const labels = {
@@ -2014,7 +2431,7 @@ function renderSettingsContent() {
     return `
       <section class="settings-placeholder">
         <h2>${labels[state.settingsSection] || 'Settings'}</h2>
-        <p>Pengaturan ini belum memerlukan konfigurasi tambahan pada workspace lokal.</p>
+        <p>This setting does not need additional configuration in the local workspace yet.</p>
       </section>
     `;
   }
@@ -2026,14 +2443,14 @@ function renderSettingsContent() {
       <div class="settings-row"><label for="profile-call-name">What should Claude call you?</label><input id="profile-call-name" value="${escapeHtml(state.profile.callName)}" /></div>
       <div class="settings-row"><label for="profile-work">What best describes your work?</label><select id="profile-work"><option value="">Select</option><option ${state.profile.work === 'Research' ? 'selected' : ''}>Research</option><option ${state.profile.work === 'Engineering' ? 'selected' : ''}>Engineering</option><option ${state.profile.work === 'Founder' ? 'selected' : ''}>Founder</option></select></div>
       <div class="settings-section-block">
-        <h3>API key</h3>
-        <p>Dipakai oleh proxy lokal untuk mengakses Claude API.</p>
-        <input id="api-key-input" type="password" placeholder="sk-ant-..." value="${escapeHtml(state.apiKey)}" />
-        <label class="check-row"><input type="checkbox" id="save-key" ${state.apiKeySaved ? 'checked' : ''} /> Simpan di browser ini</label>
+        <h3>API keys per model</h3>
+        <p>The local proxy uses keys for the active model. If the first key fails, the server automatically tries the next key in the same model family.</p>
+        <div class="api-key-settings">${renderApiKeySettings()}</div>
+        <small>Keys are saved automatically in the local backend <code>data/store.json</code>, not in browser localStorage.</small>
       </div>
       <div class="settings-section-block">
         <h3>Global memory</h3>
-        <p>Preferensi lintas sesi. Memori ini tidak ditampilkan di halaman proyek.</p>
+        <p>Cross-session preferences. This memory is not shown on project pages.</p>
         <button class="global-memory-card" data-action="open-global-memory">
           <span><strong>Manage global memory</strong><small>${escapeHtml(state.globalMemory || 'No global memory yet.')}</small></span>
           <span><small>Last updated: ${escapeHtml(formatMemoryTime(state.memoryUpdatedAt?.global))}</small>${icon('arrow_forward')}</span>
@@ -2126,13 +2543,34 @@ function focusPrompt(prefix = '') {
   }
 }
 
-function openProjectDetail(projectId) {
+async function openProjectDetail(projectId) {
   state.activeProject = projectId;
   state.view = 'project';
   state.projectMemoryEditing = false;
   state.projectFileError = '';
+  state.selectedProjectFileIds = [];
   saveState();
   render();
+  try {
+    await loadProjectFiles(projectId);
+  } catch (error) {
+    setState({ projectFileError: error.message || 'Failed to load project files.' }, false);
+  }
+}
+
+async function openConversation(conversationId) {
+  const conversation = conversationById(conversationId);
+  state.activeConversation = conversationId;
+  state.activeProject = conversation?.projectId ?? null;
+  state.view = 'chat';
+  state.conversationFileError = '';
+  saveState();
+  render();
+  try {
+    await loadConversationFiles(conversationId);
+  } catch (error) {
+    setState({ conversationFileError: error.message || 'Failed to load session files.' }, false);
+  }
 }
 
 function createProjectConversation(projectId) {
@@ -2140,17 +2578,27 @@ function createProjectConversation(projectId) {
   const project = projectById(projectId);
   state.conversations = [{
     id,
-    title: 'Tanpa judul',
+    title: 'Untitled',
     projectId,
     model: currentModelId(),
-    preview: 'Sesi proyek baru',
-    updated: 'Baru saja',
+    preview: 'New project session',
+    updated: 'Just now',
   }, ...state.conversations];
   state.messagesByConversation = {
     ...state.messagesByConversation,
-    [id]: [{ ...welcomeMessage, id: crypto.randomUUID(), text: `Project ${project?.name || ''} aktif.` }],
+    [id]: [{ ...welcomeMessage, id: crypto.randomUUID(), text: `${project?.name || 'Project'} is active.` }],
   };
+  state.conversationFiles = { ...(state.conversationFiles || {}), [id]: [] };
   state.activeConversation = id;
+}
+
+function openConversationFilePicker() {
+  if (state.view === 'project' && currentConversation()?.projectId !== state.activeProject) {
+    createProjectConversation(state.activeProject);
+    saveState();
+    render();
+  }
+  document.querySelector('.chat-file-upload-input')?.click();
 }
 
 function sendMessageFromCurrentView() {
@@ -2307,16 +2755,26 @@ function handleClick(event) {
   const skillSelectButton = event.target.closest('[data-skill-select]');
   const settingsSectionButton = event.target.closest('[data-settings-section]');
   const branchMessageButton = event.target.closest('[data-branch-message]');
-  const projectFileToggleButton = event.target.closest('[data-project-file-toggle]');
+  const projectFileSelectButton = event.target.closest('[data-project-file-select]');
   const projectFileDeleteButton = event.target.closest('[data-project-file-delete]');
+  const conversationFileToggleButton = event.target.closest('[data-conversation-file-toggle]');
+  const conversationFileDeleteButton = event.target.closest('[data-conversation-file-delete]');
+  const apiKeyAddButton = event.target.closest('[data-api-key-add]');
+  const apiKeyRemoveButton = event.target.closest('[data-api-key-remove]');
 
+  if (apiKeyAddButton) return addApiKeyRow(apiKeyAddButton.dataset.apiKeyAdd);
+  if (apiKeyRemoveButton) {
+    const [familyId, index] = apiKeyRemoveButton.dataset.apiKeyRemove.split(':');
+    return removeApiKeyRow(familyId, index);
+  }
+  if (conversationFileDeleteButton) return removeConversationFile(conversationFileDeleteButton.dataset.conversationFileDelete);
+  if (conversationFileToggleButton) return toggleConversationFileContext(conversationFileToggleButton.dataset.conversationFileToggle);
   if (projectFileDeleteButton) return removeProjectFile(projectFileDeleteButton.dataset.projectFileDelete);
-  if (projectFileToggleButton) return toggleProjectFileContext(projectFileToggleButton.dataset.projectFileToggle);
+  if (projectFileSelectButton) return toggleProjectFileSelection(projectFileSelectButton.dataset.projectFileSelect);
   if (branchMessageButton) return branchConversation(branchMessageButton.dataset.branchMessage);
   if (conversationButton) {
     const activeConversation = Number(conversationButton.dataset.conversation);
-    const conversation = conversationById(activeConversation);
-    return setState({ activeConversation, activeProject: conversation?.projectId ?? null, view: 'chat' });
+    return openConversation(activeConversation);
   }
   if (openProjectButton) return openProjectDetail(openProjectButton.dataset.openProject);
   if (quickButton) return focusPrompt(quickButton.dataset.quick);
@@ -2347,6 +2805,10 @@ function handleClick(event) {
   if (action === 'close-project-instructions') closeProjectInstructionModal();
   if (action === 'save-project-instructions') saveProjectInstruction();
   if (action === 'upload-project-files') document.querySelector('.project-file-upload-input')?.click();
+  if (action === 'toggle-all-project-files') toggleAllProjectFileSelection();
+  if (action === 'delete-selected-project-files') removeSelectedProjectFiles();
+  if (action === 'clear-project-file-selection') clearProjectFileSelection();
+  if (action === 'upload-chat-files') openConversationFilePicker();
   if (action === 'open-global-memory') openMemoryModal('global');
   if (action === 'close-memory-modal') closeMemoryModal();
   if (action === 'edit-memory-modal') startMemoryModalEditing();
@@ -2377,6 +2839,11 @@ function handleClick(event) {
 }
 
 function handleChange(event) {
+  if (event.target.matches('.chat-file-upload-input')) {
+    importConversationFiles(event.target.files);
+    event.target.value = '';
+    return;
+  }
   if (event.target.matches('.project-file-upload-input')) {
     importProjectFiles(event.target.files);
     event.target.value = '';
@@ -2399,7 +2866,6 @@ function handleChange(event) {
     setState({ model: event.target.value });
   }
   if (event.target.id === 'tone-select') setState({ tone: event.target.value });
-  if (event.target.id === 'save-key') setState({ apiKeySaved: event.target.checked });
   if (event.target.dataset.skill) {
     const id = event.target.dataset.skill;
     setState({ skills: activeSkills().map((skill) => (skill.id === id ? { ...skill, active: event.target.checked } : skill)) });
@@ -2412,9 +2878,8 @@ function handleInput(event) {
     updateSlashCommandMenu(event.target);
   }
   if (event.target.closest('.skill-modal-fields')) updateSkillModalSubmitState();
-  if (event.target.id === 'api-key-input') {
-    state.apiKey = event.target.value.trim();
-    if (state.apiKeySaved) saveState();
+  if (event.target.dataset.apiKeyFamily) {
+    setApiKeyValue(event.target.dataset.apiKeyFamily, event.target.dataset.apiKeyIndex, event.target.value);
   }
   if (event.target.id === 'project-search') {
     const query = event.target.value.trim().toLowerCase();
@@ -2465,6 +2930,74 @@ function handleKeydown(event) {
   else if (event.key === 'Escape' && state.settingsOpen) setState({ settingsOpen: false });
 }
 
+async function initializeFileStorage() {
+  try {
+    for (const legacyFile of pendingLegacyProjectFiles) {
+      const upload = new File([legacyFile.content], legacyFile.name, {
+        type: legacyFile.type || 'text/plain',
+        lastModified: Date.parse(legacyFile.addedAt) || Date.now(),
+      });
+      await uploadStoredFile(upload, 'project', legacyFile.projectId);
+    }
+
+    const projectEntries = await Promise.all(allProjects().map(async (project) => (
+      [project.id, await listStoredFiles('project', project.id)]
+    )));
+    state.projectFiles = Object.fromEntries(projectEntries);
+    state.conversationFiles = {
+      ...(state.conversationFiles || {}),
+      [state.activeConversation]: await listStoredFiles('conversation', state.activeConversation),
+    };
+    state.backendFilesMigrated = true;
+    pendingLegacyProjectFiles.splice(0);
+    state.projectFileError = '';
+    state.conversationFileError = '';
+    saveState();
+    render();
+  } catch (error) {
+    state.error = `Backend file storage could not be loaded: ${error.message}`;
+    render();
+  }
+}
+
+async function initializeBackendState() {
+  const browserMigrationState = structuredClone(state);
+  const hasBrowserMigration = Boolean(localStorage.getItem(STORAGE_KEY));
+  try {
+    const response = await fetch('/api/state', { cache: 'no-store' });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Failed to load backend state.');
+
+    if (payload.state) {
+      state = normalizePersistedState(payload.state);
+    } else if (hasBrowserMigration) {
+      state = browserMigrationState;
+    } else {
+      state = normalizePersistedState(initialState);
+    }
+
+    prepareLoadedStateFiles();
+    backendStateLoaded = true;
+    pendingPersistedState = buildPersistedState();
+    await flushStateSave();
+    localStorage.removeItem(STORAGE_KEY);
+    render();
+    await initializeFileStorage();
+    if (state.view === 'customize' && state.customizeSection === 'connectors') loadAtlassianConnectorStatus();
+  } catch (error) {
+    backendStateLoaded = false;
+    state.error = error.message || 'Backend state could not be loaded.';
+    render();
+  }
+}
+
+window.addEventListener('beforeunload', () => {
+  if (!backendStateLoaded) return;
+  const payload = JSON.stringify({ state: pendingPersistedState || buildPersistedState() });
+  const body = new Blob([payload], { type: 'application/json' });
+  navigator.sendBeacon?.('/api/state', body);
+});
+
 function renderCurrentView() {
   if (state.view === 'projects') return renderProjectsView();
   if (state.view === 'project') return renderProjectDetailView();
@@ -2502,4 +3035,4 @@ app.addEventListener('change', handleChange);
 app.addEventListener('input', handleInput);
 app.addEventListener('keydown', handleKeydown);
 render();
-if (state.view === 'customize' && state.customizeSection === 'connectors') loadAtlassianConnectorStatus();
+initializeBackendState();

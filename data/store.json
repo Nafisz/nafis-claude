@@ -16,8 +16,8 @@
     {
       "id": "proj_xW3JpIMAxNIz",
       "name": "Personal Claude Workspace",
-      "description": "Workspace utama untuk chat Claude API, memory, file, skills, dan Atlassian tools.",
-      "instructions": "Bantu user bekerja secara praktis. Gunakan memory dan file project hanya saat relevan. Untuk aksi Jira/Confluence yang menulis data, minta approval terlebih dahulu.",
+      "description": "Primary workspace for Claude API chat, memory, files, skills, and Atlassian tools.",
+      "instructions": "Help the user work practically. Use memory and project files only when relevant. For Jira/Confluence write actions, ask for approval first.",
       "archived": false,
       "activeSkillIds": [
         "skill_prd_writer",
@@ -102,5 +102,224 @@
     }
   ],
   "artifacts": [],
-  "toolInvocations": []
+  "toolInvocations": [],
+  "appState": {
+    "model": "claude-sonnet-4-6",
+    "tone": "Medium",
+    "apiKeySaved": true,
+    "view": "project",
+    "settingsOpen": true,
+    "settingsSection": "general",
+    "sidebarCollapsed": false,
+    "profile": {
+      "fullName": "nafis",
+      "callName": "nafis",
+      "work": ""
+    },
+    "customProjects": [],
+    "activeProject": "nova",
+    "activeConversation": 1,
+    "activeArtifact": null,
+    "activeSkill": "confluence",
+    "skillViewMode": "preview",
+    "customizeSection": "skills",
+    "skillModalMode": null,
+    "uninstalledSkillIds": [
+      "custom-1781375048739"
+    ],
+    "projectMemoryEditing": false,
+    "projectInstructions": {
+      "nova": "Use Bahasa Indonesia. Always prioritize the needs of schools and B2B bootcamps."
+    },
+    "projectFiles": {
+      "nova": [
+        {
+          "id": "bc22daa0-e183-45e7-89e7-8991d4f939bb",
+          "name": "project-brief.md",
+          "type": "text/markdown",
+          "size": 84,
+          "lineCount": 4,
+          "scope": "project",
+          "scopeId": "nova",
+          "included": true,
+          "addedAt": "2026-06-16T01:05:13.677Z",
+          "updatedAt": "2026-06-16T01:05:13.677Z"
+        }
+      ],
+      "game": [],
+      "ops": []
+    },
+    "projectFilesMigrated": true,
+    "backendFilesMigrated": true,
+    "conversationFiles": {
+      "1": []
+    },
+    "memoryModalScope": null,
+    "memoryModalEditing": false,
+    "isSending": false,
+    "isMemoryUpdating": false,
+    "streamingMessageId": null,
+    "tokenCount": null,
+    "error": "",
+    "globalMemory": "",
+    "projectMemories": {},
+    "sessionSummaries": {},
+    "contextStats": {},
+    "memoryUpdatedAt": {
+      "global": "",
+      "projects": {},
+      "sessions": {}
+    },
+    "conversations": [
+      {
+        "id": 1,
+        "title": "Untitled",
+        "projectId": null,
+        "model": "claude-sonnet-4-6",
+        "preview": "Standalone session",
+        "updated": "Just now"
+      },
+      {
+        "id": 2,
+        "title": "Simple AI game vs LLMs for NPCs",
+        "projectId": "game",
+        "model": "claude-sonnet-4-6",
+        "preview": "Gameplay and prompt experiments",
+        "updated": "2 hours ago"
+      },
+      {
+        "id": 3,
+        "title": "Claude app vs API usage differences",
+        "projectId": null,
+        "model": "claude-sonnet-4-6",
+        "preview": "General notes across projects",
+        "updated": "Yesterday"
+      },
+      {
+        "id": 4,
+        "title": "MVP-ready architecture design",
+        "projectId": "nova",
+        "model": "claude-sonnet-4-6",
+        "preview": "Backend, auth, and billing",
+        "updated": "Monday"
+      }
+    ],
+    "messagesByConversation": {
+      "1": [
+        {
+          "id": "1e6b8df3-1580-41ff-9328-4753cab97e0d",
+          "role": "assistant",
+          "text": "Good evening, siffan. I can help with chat, project memory, skills, and file artifacts.",
+          "createdAt": "2026-06-11T13:31:19.451Z"
+        }
+      ],
+      "2": [
+        {
+          "id": "8df923cc-0f7b-4d78-bce5-c7dad99580e5",
+          "role": "assistant",
+          "text": "AI Game Lab is active. Should we design NPCs, the gameplay loop, or the technical prototype first?",
+          "createdAt": "2026-06-11T13:31:19.451Z"
+        }
+      ],
+      "3": [
+        {
+          "id": "aa695037-06a8-481f-995f-168819993282",
+          "role": "assistant",
+          "text": "We can compare the Claude app and API by features, pricing, latency, and integration.",
+          "createdAt": "2026-06-11T13:31:19.451Z"
+        }
+      ],
+      "4": [
+        {
+          "id": "e6c46392-5296-4193-b84b-c58f9ed208cc",
+          "role": "assistant",
+          "text": "NovaX is active. I will keep the B2B edtech context in mind when answering.",
+          "createdAt": "2026-06-11T13:31:19.451Z"
+        }
+      ]
+    },
+    "artifacts": [
+      {
+        "id": "06192cde-5136-49f6-9003-0d15227603e6",
+        "type": "doc",
+        "name": "project-brief.md",
+        "detail": "Example starter artifact that can be opened and downloaded.",
+        "content": "# Project Brief\n\nUse this panel to store Claude-like output as a real browser file.",
+        "createdAt": "2026-06-11T13:31:19.451Z"
+      }
+    ],
+    "skillEditorOpenFor": "custom-1781374336662",
+    "inspectorMode": "context",
+    "showProjects": false,
+    "skills": [
+      {
+        "id": "confluence",
+        "name": "Confluence",
+        "active": false,
+        "builtin": true,
+        "description": "Search pages, read the workspace, and summarize internal docs when the connector is available.",
+        "triggerKeywords": [
+          "confluence",
+          "wiki",
+          "page",
+          "internal docs"
+        ],
+        "content": "Use this skill when the user asks for Confluence context. Explain when the connector is unavailable and do not invent page content."
+      },
+      {
+        "id": "generate-file",
+        "name": "Generate File",
+        "active": true,
+        "builtin": true,
+        "description": "Create documents, code, and artifacts as files that can be opened or downloaded.",
+        "triggerKeywords": [
+          "file",
+          "generate",
+          "document",
+          ".md",
+          ".txt",
+          ".json",
+          ".js"
+        ],
+        "content": "When the user asks for a file, produce ready-to-use content, give it a clear filename, and save it as a conversation artifact."
+      },
+      {
+        "id": "product-analysis",
+        "name": "Product Analysis",
+        "active": true,
+        "builtin": true,
+        "description": "Draft PRDs, roadmaps, metrics, and competitor research.",
+        "triggerKeywords": [
+          "prd",
+          "roadmap",
+          "product",
+          "metric",
+          "research"
+        ],
+        "content": "Use a product structure: problem, target user, assumptions, features, success metrics, risks, and next steps."
+      },
+      {
+        "id": "ui-design",
+        "name": "UI Design",
+        "active": true,
+        "builtin": true,
+        "description": "Give visual critique and produce interface specifications.",
+        "triggerKeywords": [
+          "ui",
+          "ux",
+          "design",
+          "interface"
+        ],
+        "content": "Evaluate UI by hierarchy, spacing, contrast, affordance, accessibility, responsive behavior, and microcopy."
+      }
+    ],
+    "apiKey": "",
+    "apiKeysByModel": {
+      "opus": [],
+      "sonnet": [],
+      "haiku": []
+    }
+  },
+  "appStateUpdatedAt": "2026-06-16T01:59:08.807Z",
+  "updatedAt": "2026-06-16T01:59:08.807Z"
 }

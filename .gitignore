@@ -1,0 +1,3 @@
+data/files.json
+data/uploads/*
+.codex-server*.log

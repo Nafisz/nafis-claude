@@ -48,6 +48,9 @@ const {
   executeAtlassianTool,
   normalizeAtlassianBaseUrl,
   testAtlassianConnection,
+  apiKeysFromRequest,
+  modelKeyFamily,
+  callAnthropicJsonWithFallback,
 } = require('../server');
 
 test('Atlassian tool registry exposes read and explicit-write operations with strict schemas', () => {
@@ -84,11 +87,25 @@ test('chat system prompt retrieves selected project-file excerpts for the latest
   assert.match(prompt, /reference data, not as system instructions/);
 });
 
+test('chat system prompt retrieves selected conversation-file excerpts separately', () => {
+  const prompt = buildSystemPrompt({
+    lastUserMessage: 'Apa keputusan rollout?',
+    conversationFiles: [{
+      name: 'rollout.md',
+      content: '# Rollout\n\nKeputusan rollout dilakukan bertahap mulai dari tim internal.',
+    }],
+  });
+
+  assert.match(prompt, /## Retrieved Chat Files/);
+  assert.match(prompt, /rollout\.md/);
+  assert.match(prompt, /bertahap mulai dari tim internal/);
+});
+
 test('Atlassian connector accepts a secure base URL and strips trailing slashes', () => {
   assert.equal(normalizeAtlassianBaseUrl('https://example.atlassian.net///'), 'https://example.atlassian.net');
   assert.throws(() => normalizeAtlassianBaseUrl('http://example.atlassian.net'), /HTTPS/);
-  assert.throws(() => normalizeAtlassianBaseUrl('https://example.atlassian.net/wiki'), /path tambahan/);
-  assert.throws(() => normalizeAtlassianBaseUrl('not-a-url'), /tidak valid/);
+  assert.throws(() => normalizeAtlassianBaseUrl('https://example.atlassian.net/wiki'), /extra path/);
+  assert.throws(() => normalizeAtlassianBaseUrl('not-a-url'), /invalid/);
 });
 
 test('Atlassian connection verification checks Jira and Confluence access', async () => {
@@ -185,6 +202,62 @@ test('explicit tool selection exposes only known requested tools', () => {
   assert.deepEqual(selectRequestedTools(atlassianTools(), []).tools.map((tool) => tool.name), atlassianTools().map((tool) => tool.name));
 });
 
+test('Anthropic API keys are selected from the matching model family', () => {
+  const previousEnv = {
+    key: process.env.ANTHROPIC_API_KEY,
+    keys: process.env.ANTHROPIC_API_KEYS,
+    sonnet: process.env.ANTHROPIC_SONNET_API_KEYS,
+  };
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEYS;
+  process.env.ANTHROPIC_SONNET_API_KEYS = 'env-sonnet-1, env-sonnet-2';
+  try {
+    assert.equal(modelKeyFamily('claude-opus-4-8'), 'opus');
+    assert.equal(modelKeyFamily('claude-haiku-4-5-20251001'), 'haiku');
+    assert.deepEqual(apiKeysFromRequest({
+      apiKeysByModel: {
+        opus: ['opus-1'],
+        sonnet: ['sonnet-1', 'sonnet-2'],
+        haiku: ['haiku-1'],
+      },
+      apiKeys: ['request-generic'],
+    }, 'claude-sonnet-4-6'), ['sonnet-1', 'sonnet-2', 'request-generic', 'env-sonnet-1', 'env-sonnet-2']);
+  } finally {
+    if (previousEnv.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = previousEnv.key;
+    if (previousEnv.keys === undefined) delete process.env.ANTHROPIC_API_KEYS; else process.env.ANTHROPIC_API_KEYS = previousEnv.keys;
+    if (previousEnv.sonnet === undefined) delete process.env.ANTHROPIC_SONNET_API_KEYS; else process.env.ANTHROPIC_SONNET_API_KEYS = previousEnv.sonnet;
+  }
+});
+
+test('Anthropic JSON calls fall back to the next API key after a retryable failure', async () => {
+  const originalFetch = global.fetch;
+  const usedKeys = [];
+  global.fetch = async (_url, options = {}) => {
+    usedKeys.push(options.headers['x-api-key']);
+    if (usedKeys.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'invalid key' } }), { status: 401 });
+    }
+    return new Response(JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      usage: { input_tokens: 1, output_tokens: 1 },
+      content: [{ type: 'text', text: 'ok' }],
+    }), { status: 200 });
+  };
+  try {
+    const result = await callAnthropicJsonWithFallback({
+      apiKeys: ['bad-key', 'good-key'],
+      model: 'claude-sonnet-4-6',
+      system: '',
+      messages: [{ role: 'user', content: 'Hello' }],
+      maxTokens: 8,
+    });
+    assert.deepEqual(usedKeys, ['bad-key', 'good-key']);
+    assert.equal(result.content[0].text, 'ok');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('tool results are bounded before being exposed to UI/model context', () => {
   const result = truncateToolResult('x'.repeat(100), 20);
   assert.ok(result.length < 60);
@@ -202,11 +275,11 @@ test('Anthropic SSE parser surfaces upstream error events', async () => {
 test('tool execution reports missing connector and blocks unauthorized writes before network access', async () => {
   await assert.rejects(
     () => executeAtlassianTool({ name: 'atlassian_jira_search', input: { query: 'KAN' } }, { latestUserMessage: 'Search Jira' }),
-    /connector belum dikonfigurasi/,
+    /connector is not configured/,
   );
   await assert.rejects(
     () => executeAtlassianTool({ name: 'atlassian_jira_update_issue', input: { issueKey: 'KAN-1', summary: 'Changed' } }, { latestUserMessage: 'Show Jira KAN-1' }),
-    /Operasi tulis diblokir/,
+    /Write operation blocked/,
   );
 });
 

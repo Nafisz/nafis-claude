@@ -38,7 +38,7 @@ test('branches through a selected message and preserves inherited project/model'
 
 test('branching an existing branch keeps the original root lineage', () => {
   const result = createConversationBranch({
-    conversation: { ...source, id: 20, parentConversationId: 10, rootConversationId: 10, title: 'NovaX architecture — branch' },
+    conversation: { ...source, id: 20, parentConversationId: 10, rootConversationId: 10, title: 'NovaX architecture - branch' },
     messages,
     id: 30,
     now: '2026-06-09T00:00:00.000Z',
@@ -46,5 +46,5 @@ test('branching an existing branch keeps the original root lineage', () => {
   });
   assert.equal(result.conversation.parentConversationId, 20);
   assert.equal(result.conversation.rootConversationId, 10);
-  assert.equal(branchTitle(result.conversation.title), 'NovaX architecture — branch');
+  assert.equal(branchTitle(result.conversation.title), 'NovaX architecture - branch');
 });

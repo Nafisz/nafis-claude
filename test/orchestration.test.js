@@ -118,7 +118,7 @@ test('agent loop returns invalid tool JSON as an error result instead of crashin
   });
   assert.equal(result.text, 'Recovered');
   assert.equal(seen[0].status, 'error');
-  assert.match(seen[0].content, /JSON tidak valid/);
+  assert.match(seen[0].content, /JSON is invalid/);
 });
 
 
