@@ -107,7 +107,7 @@
     "model": "ag/claude-sonnet-4-6",
     "tone": "Medium",
     "apiKeySaved": true,
-    "view": "chat",
+    "view": "projects",
     "settingsOpen": false,
     "settingsSection": "general",
     "sidebarCollapsed": false,
@@ -116,8 +116,16 @@
       "callName": "nafis",
       "work": ""
     },
-    "customProjects": [],
-    "activeProject": null,
+    "customProjects": [
+      {
+        "id": "project-1781663087701",
+        "name": "New project 1",
+        "systemPrompt": "",
+        "memory": "",
+        "color": "neutral"
+      }
+    ],
+    "activeProject": "project-1781663087701",
     "activeConversation": null,
     "activeArtifact": null,
     "activeSkill": "confluence",
@@ -134,7 +142,8 @@
     "projectFiles": {
       "nova": [],
       "game": [],
-      "ops": []
+      "ops": [],
+      "project-1781663087701": []
     },
     "projectFilesMigrated": true,
     "backendFilesMigrated": true,
@@ -416,6 +425,6 @@
       "opus": []
     }
   },
-  "appStateUpdatedAt": "2026-06-16T19:02:24.939Z",
-  "updatedAt": "2026-06-16T19:02:24.939Z"
+  "appStateUpdatedAt": "2026-06-17T02:45:11.164Z",
+  "updatedAt": "2026-06-17T02:45:11.164Z"
 }

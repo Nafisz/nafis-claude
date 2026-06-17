@@ -201,6 +201,7 @@ const initialState = {
   conversationMenuId: null,
   conversationRenameId: null,
   conversationRenameDraft: '',
+  conversationProjectPickerId: null,
   conversationDeleteConfirmId: null,
   profile: { fullName: 'nafis', callName: 'nafis', work: '' },
   customProjects: [],
@@ -308,6 +309,7 @@ function normalizePersistedState(stored = {}) {
       conversationMenuId: null,
       conversationRenameId: null,
       conversationRenameDraft: '',
+      conversationProjectPickerId: null,
       conversationDeleteConfirmId: null,
       profile: { ...initialState.profile, ...(stored.profile || {}) },
       customProjects: stored.customProjects || [],
@@ -432,6 +434,7 @@ function buildPersistedState() {
     conversationMenuId,
     conversationRenameId,
     conversationRenameDraft,
+    conversationProjectPickerId,
     conversationDeleteConfirmId,
     ...persistableState
   } = state;
@@ -1240,6 +1243,7 @@ function newConversation() {
   state.conversationMenuId = null;
   state.conversationRenameId = null;
   state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = null;
   state.error = '';
   saveState();
@@ -1296,6 +1300,7 @@ function startConversationRename(conversationId) {
   state.conversationMenuId = conversationId;
   state.conversationRenameId = conversationId;
   state.conversationRenameDraft = conversation.title;
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = null;
   render();
   setTimeout(() => {
@@ -1308,7 +1313,26 @@ function startConversationRename(conversationId) {
 function cancelConversationRename() {
   state.conversationRenameId = null;
   state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = null;
+  render();
+}
+
+function openConversationProjectPicker(conversationId) {
+  if (!conversationById(conversationId)) return;
+  state.conversationMenuId = null;
+  state.conversationRenameId = null;
+  state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = conversationId;
+  state.conversationDeleteConfirmId = null;
+  render();
+  setTimeout(() => {
+    document.querySelector('.conversation-project-modal [data-conversation-move-project], .conversation-project-modal [data-action="close-conversation-project-picker"]')?.focus();
+  }, 0);
+}
+
+function closeConversationProjectPicker() {
+  state.conversationProjectPickerId = null;
   render();
 }
 
@@ -1317,6 +1341,7 @@ function requestConversationDelete(conversationId) {
   state.conversationMenuId = conversationId;
   state.conversationRenameId = null;
   state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = conversationId;
   render();
 }
@@ -1337,6 +1362,7 @@ function saveConversationRename(conversationId) {
   state.conversationMenuId = null;
   state.conversationRenameId = null;
   state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = null;
   saveState({ immediate: true });
   render();
@@ -1355,6 +1381,7 @@ function moveConversationToProject(projectId, conversationId = state.activeConve
   state.conversationMenuId = null;
   state.conversationRenameId = null;
   state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = null;
   saveState({ immediate: true });
   render();
@@ -1384,6 +1411,7 @@ async function deleteConversation(conversationId) {
   state.conversationMenuId = null;
   state.conversationRenameId = null;
   state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = null;
   if (wasActive) {
     state.activeConversation = nextActive?.id ?? null;
@@ -2033,13 +2061,10 @@ function renderWindowBar() {
 }
 
 function renderConversationProjectOption(conversation, project) {
-  const isGeneral = !project;
-  const projectId = project?.id || '';
-  const label = project?.name || 'General chat';
-  const active = isGeneral ? !conversation.projectId : conversation.projectId === projectId;
+  const active = conversation.projectId === project.id;
   return `
-    <button class="conversation-project-option ${active ? 'active' : ''}" data-conversation-move-project="${conversation.id}" data-project-id="${escapeHtml(projectId)}">
-      <span>${escapeHtml(label)}</span>
+    <button class="conversation-project-option ${active ? 'active' : ''}" data-conversation-move-project="${conversation.id}" data-project-id="${escapeHtml(project.id)}">
+      <span>${escapeHtml(project.name)}</span>
       ${active ? phIcon('check') : ''}
     </button>
   `;
@@ -2079,13 +2104,8 @@ function renderConversationMenu(conversation) {
   return `
     <div class="recent-menu" role="menu" aria-label="Session options">
       <button data-conversation-rename="${conversation.id}" role="menuitem">${phIcon('pencil-simple')}<span>Rename</span></button>
-      <div class="conversation-menu-section">
-        <p>Move to project</p>
-        <div class="conversation-project-list">
-          ${renderConversationProjectOption(conversation, null)}
-          ${allProjects().map((project) => renderConversationProjectOption(conversation, project)).join('')}
-        </div>
-      </div>
+      <button data-conversation-project-picker="${conversation.id}" role="menuitem">${phIcon('folder-simple')}<span>Move to project</span></button>
+      ${conversation.projectId ? `<button data-conversation-remove-project="${conversation.id}" role="menuitem">${phIcon('folder-minus')}<span>Remove from project</span></button>` : ''}
       <button class="danger" data-conversation-delete="${conversation.id}" role="menuitem">${phIcon('trash')}<span>Delete session</span></button>
     </div>
   `;
@@ -2849,6 +2869,7 @@ async function openConversation(conversationId) {
   state.conversationMenuId = null;
   state.conversationRenameId = null;
   state.conversationRenameDraft = '';
+  state.conversationProjectPickerId = null;
   state.conversationDeleteConfirmId = null;
   state.conversationFileError = '';
   saveState();
@@ -2910,6 +2931,39 @@ function slashCommandContext(input) {
     start: cursor - match[1].length - 1,
     end: cursor,
   };
+}
+
+function renderConversationProjectPickerModal() {
+  const conversation = conversationById(state.conversationProjectPickerId);
+  if (!conversation) return '';
+  const projects = allProjects();
+  const currentProject = projectById(conversation.projectId);
+  return `
+    <div class="conversation-project-modal-backdrop">
+      <section class="conversation-project-modal" role="dialog" aria-modal="true" aria-labelledby="conversation-project-modal-title">
+        <header class="conversation-project-modal-header">
+          <div>
+            <p>Session project</p>
+            <h2 id="conversation-project-modal-title">Move to project</h2>
+          </div>
+          <button data-action="close-conversation-project-picker" aria-label="Close project picker">${phIcon('x')}</button>
+        </header>
+        <div class="conversation-project-modal-session">
+          <span>${escapeHtml(conversation.title)}</span>
+          <small>${currentProject ? `Currently in ${escapeHtml(currentProject.name)}` : 'Not in a project'}</small>
+        </div>
+        <div class="conversation-project-modal-list" role="listbox" aria-label="Projects">
+          ${projects.length
+            ? projects.map((project) => renderConversationProjectOption(conversation, project)).join('')
+            : '<span class="conversation-project-empty">No projects yet.</span>'}
+        </div>
+        <footer class="conversation-project-modal-actions">
+          ${conversation.projectId ? `<button data-conversation-remove-project="${conversation.id}">${phIcon('folder-minus')}<span>Remove from project</span></button>` : ''}
+          <button data-action="close-conversation-project-picker">Cancel</button>
+        </footer>
+      </section>
+    </div>
+  `;
 }
 
 function renderSlashCommandMenu() {
@@ -3026,6 +3080,7 @@ function handleClick(event) {
     state.conversationMenuId = null;
     state.conversationRenameId = null;
     state.conversationRenameDraft = '';
+    state.conversationProjectPickerId = null;
     state.conversationDeleteConfirmId = null;
     render();
   }
@@ -3035,6 +3090,8 @@ function handleClick(event) {
   const conversationRenameButton = event.target.closest('[data-conversation-rename]');
   const conversationRenameSaveButton = event.target.closest('[data-conversation-rename-save]');
   const conversationRenameCancelButton = event.target.closest('[data-conversation-rename-cancel]');
+  const conversationProjectPickerButton = event.target.closest('[data-conversation-project-picker]');
+  const conversationRemoveProjectButton = event.target.closest('[data-conversation-remove-project]');
   const conversationMoveProjectButton = event.target.closest('[data-conversation-move-project]');
   const conversationDeleteButton = event.target.closest('[data-conversation-delete]');
   const conversationDeleteConfirmButton = event.target.closest('[data-conversation-delete-confirm]');
@@ -3055,6 +3112,7 @@ function handleClick(event) {
   const apiKeyAddButton = event.target.closest('[data-api-key-add]');
   const apiKeyRemoveButton = event.target.closest('[data-api-key-remove]');
 
+  if (event.target.classList.contains('conversation-project-modal-backdrop')) return closeConversationProjectPicker();
   if (apiKeyAddButton) return addApiKeyRow(apiKeyAddButton.dataset.apiKeyAdd);
   if (apiKeyRemoveButton) {
     const [familyId, index] = apiKeyRemoveButton.dataset.apiKeyRemove.split(':');
@@ -3065,6 +3123,7 @@ function handleClick(event) {
     state.conversationMenuId = state.conversationMenuId === conversationId ? null : conversationId;
     state.conversationRenameId = null;
     state.conversationRenameDraft = '';
+    state.conversationProjectPickerId = null;
     state.conversationDeleteConfirmId = null;
     render();
     return;
@@ -3072,6 +3131,8 @@ function handleClick(event) {
   if (conversationRenameButton) return startConversationRename(Number(conversationRenameButton.dataset.conversationRename));
   if (conversationRenameSaveButton) return saveConversationRename(Number(conversationRenameSaveButton.dataset.conversationRenameSave));
   if (conversationRenameCancelButton) return cancelConversationRename();
+  if (conversationProjectPickerButton) return openConversationProjectPicker(Number(conversationProjectPickerButton.dataset.conversationProjectPicker));
+  if (conversationRemoveProjectButton) return moveConversationToProject(null, Number(conversationRemoveProjectButton.dataset.conversationRemoveProject));
   if (conversationDeleteCancelButton) return cancelConversationDelete();
   if (conversationDeleteConfirmButton) return deleteConversation(Number(conversationDeleteConfirmButton.dataset.conversationDeleteConfirm));
   if (conversationMoveProjectButton) {
@@ -3114,6 +3175,7 @@ function handleClick(event) {
   }
   if (action === 'show-settings') setState({ settingsOpen: true, settingsSection: 'general' });
   if (action === 'close-settings') setState({ settingsOpen: false });
+  if (action === 'close-conversation-project-picker') closeConversationProjectPicker();
   if (action === 'open-project-memory') openMemoryModal('project');
   if (action === 'open-project-instructions') openProjectInstructionModal();
   if (action === 'close-project-instructions') closeProjectInstructionModal();
@@ -3262,10 +3324,13 @@ function handleKeydown(event) {
   } else if (event.key === 'Escape' && document.querySelector('.skill-create-disclosure[open], .skill-actions-disclosure[open]')) {
     document.querySelectorAll('.skill-create-disclosure[open]').forEach((menu) => menu.removeAttribute('open'));
     document.querySelectorAll('.skill-actions-disclosure[open]').forEach((menu) => menu.removeAttribute('open'));
+  } else if (event.key === 'Escape' && state.conversationProjectPickerId !== null) {
+    closeConversationProjectPicker();
   } else if (event.key === 'Escape' && state.conversationMenuId !== null) {
     state.conversationMenuId = null;
     state.conversationRenameId = null;
     state.conversationRenameDraft = '';
+    state.conversationProjectPickerId = null;
     state.conversationDeleteConfirmId = null;
     render();
   } else if (event.key === 'Escape' && state.memoryModalScope) closeMemoryModal();
@@ -3360,6 +3425,7 @@ function render() {
       ${renderMemoryModal()}
       ${renderSkillModal()}
       ${renderProjectInstructionModal()}
+      ${renderConversationProjectPickerModal()}
     </div>
   `;
   document.querySelector('#messages')?.scrollTo({ top: 999999 });
