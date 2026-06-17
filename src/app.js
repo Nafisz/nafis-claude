@@ -4,6 +4,8 @@ const STORAGE_KEY = 'nafisClaudeWorkspace:v2';
 const CONTEXT_CHAR_BUDGET = 3_200_000;
 const SESSION_SUMMARY_TRIGGER = 14;
 const MEMORY_UPDATE_TURN_INTERVAL = 6;
+const STREAM_RENDER_INTERVAL_MS = 36;
+const STREAM_SAVE_INTERVAL_MS = 900;
 const PROJECT_FILE_EXTENSIONS = new Set(['md', 'txt', 'json', 'csv', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'xml', 'yaml', 'yml']);
 
 const SONNET_MODEL_ID = 'ag/claude-sonnet-4-6';
@@ -205,6 +207,11 @@ const initialState = {
   conversationDeleteConfirmId: null,
   profile: { fullName: 'nafis', callName: 'nafis', work: '' },
   customProjects: [],
+  projectOverrides: {},
+  deletedProjectIds: [],
+  projectActionsOpenProjectId: null,
+  projectDeleteConfirmId: null,
+  projectDetailsModalOpen: false,
   activeProject: null,
   activeConversation: 1,
   activeArtifact: null,
@@ -313,6 +320,11 @@ function normalizePersistedState(stored = {}) {
       conversationDeleteConfirmId: null,
       profile: { ...initialState.profile, ...(stored.profile || {}) },
       customProjects: stored.customProjects || [],
+      projectOverrides: stored.projectOverrides || {},
+      deletedProjectIds: stored.deletedProjectIds || [],
+      projectActionsOpenProjectId: null,
+      projectDeleteConfirmId: null,
+      projectDetailsModalOpen: false,
       skillModalMode: null,
       uninstalledSkillIds: stored.uninstalledSkillIds || [],
       connectorStatus: { ...initialState.connectorStatus },
@@ -436,6 +448,9 @@ function buildPersistedState() {
     conversationRenameDraft,
     conversationProjectPickerId,
     conversationDeleteConfirmId,
+    projectActionsOpenProjectId,
+    projectDeleteConfirmId,
+    projectDetailsModalOpen,
     ...persistableState
   } = state;
   const persisted = {
@@ -516,12 +531,35 @@ function currentModelId() {
   return normalizeModelId(currentConversation()?.model || state.model || DEFAULT_MODEL_ID);
 }
 
-function projectById(id) {
-  return [...defaultProjects, ...(state.customProjects || [])].find((project) => project.id === id) ?? null;
+function projectWithOverrides(project) {
+  const override = state.projectOverrides?.[project.id] || {};
+  return { ...project, ...override, id: project.id, color: override.color || project.color };
 }
 
-function allProjects() {
-  return [...defaultProjects, ...(state.customProjects || [])];
+function allProjects({ includeDeleted = false } = {}) {
+  const deletedProjectIds = new Set(state.deletedProjectIds || []);
+  return [...defaultProjects, ...(state.customProjects || [])]
+    .filter((project) => includeDeleted || !deletedProjectIds.has(project.id))
+    .map(projectWithOverrides);
+}
+
+function projectById(id) {
+  if (id === null || id === undefined) return null;
+  return allProjects().find((project) => project.id === id) ?? null;
+}
+
+function isCustomProject(projectId) {
+  return (state.customProjects || []).some((project) => project.id === projectId);
+}
+
+function projectEditableDescription(project) {
+  if (!project) return '';
+  if (Object.prototype.hasOwnProperty.call(project, 'description')) return project.description || '';
+  return project.memory || project.systemPrompt || '';
+}
+
+function projectDescription(project) {
+  return projectEditableDescription(project) || 'Project workspace with dedicated memory and instructions.';
 }
 
 function currentConversation() {
@@ -532,6 +570,14 @@ function currentConversation() {
 function currentMessages(conversationId = state.activeConversation) {
   if (conversationId === null || conversationId === undefined) return [];
   return state.messagesByConversation[conversationId] ?? [];
+}
+
+function scrollChatToBottom() {
+  const chatView = document.querySelector('.chat-view');
+  const fallbackMessages = document.querySelector('#messages');
+  const scrollTarget = chatView || fallbackMessages;
+  if (!scrollTarget) return;
+  scrollTarget.scrollTop = scrollTarget.scrollHeight;
 }
 
 function conversationById(id) {
@@ -1077,14 +1123,63 @@ async function requestClaude(prompt, assistantId, conversationId, triggers = {})
   let usage = null;
   let model = currentModelId();
   const toolActions = [];
+  let pendingAssistantText = '';
+  let pendingForceSave = false;
+  let streamRenderTimer = null;
+  let lastStreamRenderAt = 0;
+  let lastStreamSaveAt = Date.now();
 
-  function updateAssistantText(nextText) {
+  function renderAssistantMessageDom(message) {
+    const article = [...document.querySelectorAll('[data-message-id]')]
+      .find((element) => element.dataset.messageId === String(assistantId));
+    const body = article?.querySelector('.message-body');
+    if (!body || !message) return false;
+    body.innerHTML = renderMessageBody(message);
+    scrollChatToBottom();
+    return true;
+  }
+
+  function flushAssistantText() {
+    if (streamRenderTimer) {
+      clearTimeout(streamRenderTimer);
+      streamRenderTimer = null;
+    }
+    lastStreamRenderAt = Date.now();
+    const shouldSave = pendingForceSave || lastStreamRenderAt - lastStreamSaveAt >= STREAM_SAVE_INTERVAL_MS;
+    pendingForceSave = false;
+    if (shouldSave) lastStreamSaveAt = lastStreamRenderAt;
     const messages = state.messagesByConversation[conversationId] || [];
+    let updatedMessage = null;
     state.messagesByConversation[conversationId] = messages.map((message) => (
-      message.id === assistantId ? { ...message, text: nextText || '…', actions: toolActions, usage, model } : message
+      message.id === assistantId
+        ? (updatedMessage = { ...message, text: pendingAssistantText || '...', actions: toolActions, usage, model, streaming: true })
+        : message
     ));
-    saveState();
-    render();
+    if (shouldSave) saveState();
+    if (!renderAssistantMessageDom(updatedMessage)) {
+      render();
+      scrollChatToBottom();
+    }
+  }
+
+  function updateAssistantText(nextText, { immediate = false, forceSave = false } = {}) {
+    pendingAssistantText = nextText;
+    pendingForceSave = pendingForceSave || forceSave;
+    if (immediate) {
+      flushAssistantText();
+      return;
+    }
+    if (streamRenderTimer) return;
+    const elapsed = Date.now() - lastStreamRenderAt;
+    const delay = Math.max(0, STREAM_RENDER_INTERVAL_MS - elapsed);
+    streamRenderTimer = setTimeout(flushAssistantText, delay);
+  }
+
+  function cancelAssistantTextUpdate() {
+    if (streamRenderTimer) {
+      clearTimeout(streamRenderTimer);
+      streamRenderTimer = null;
+    }
   }
 
   function handleStreamEvent() {
@@ -1105,6 +1200,7 @@ async function requestClaude(prompt, assistantId, conversationId, triggers = {})
       usage = payload.usage || usage;
       model = payload.model || model;
       if (payload.text && !text) text = payload.text;
+      updateAssistantText(text, { immediate: true, forceSave: true });
     }
     if (eventName === 'error') {
       throw new Error(payload.error || 'Claude API failed to respond.');
@@ -1112,23 +1208,29 @@ async function requestClaude(prompt, assistantId, conversationId, triggers = {})
     eventName = '';
   }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line) {
-        handleStreamEvent();
-      } else if (line.startsWith('event:')) {
-        eventName = line.slice(6).trim();
-      } else if (line.startsWith('data:')) {
-        dataLines.push(line.slice(5).trimStart());
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line) {
+          handleStreamEvent();
+        } else if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trimStart());
+        }
       }
     }
+    handleStreamEvent();
+    updateAssistantText(text, { immediate: true, forceSave: true });
+  } catch (error) {
+    cancelAssistantTextUpdate();
+    throw error;
   }
-  handleStreamEvent();
 
   return {
     text: text || 'Claude merespons tanpa teks.',
@@ -2166,17 +2268,31 @@ function renderActions(message) {
   `).join('');
 }
 
+function renderMessageText(message) {
+  const text = message.text || '';
+  if (message.role === 'assistant') {
+    return `<div class="message-markdown">${renderMarkdown(text)}</div>`;
+  }
+  return `<p class="message-text">${escapeHtml(text)}</p>`;
+}
+
+function renderMessageBody(message) {
+  return `
+    ${message.triggerCommands?.length ? `<div class="message-trigger-list">${message.triggerCommands.map((command) => `<span>/${escapeHtml(command.command)}</span>`).join('')}</div>` : ''}
+    ${message.attachedFiles?.length ? `<div class="message-file-list">${message.attachedFiles.map((file) => `<span>${phIcon('paperclip')} ${escapeHtml(file.name)}</span>`).join('')}</div>` : ''}
+    ${renderMessageText(message)}
+    ${message.usage ? `<small class="usage">${escapeHtml(message.model || state.model)} · input ${message.usage.input_tokens ?? 0} · output ${message.usage.output_tokens ?? 0}</small>` : ''}
+    ${renderActions(message)}
+    ${message.role === 'assistant' && !state.isSending ? `<button class="branch-message" data-branch-message="${message.id}">${icon('fork_right')} Branch from here</button>` : ''}
+  `;
+}
+
 function renderMessages() {
   return currentMessages().map((message) => `
-    <article class="message ${escapeHtml(message.role)}">
+    <article class="message ${escapeHtml(message.role)}" data-message-id="${escapeHtml(message.id)}">
       <div class="message-avatar">${message.role === 'assistant' ? '<img class="claude-mark message-mark" src="/src/assets/claude-spark-clay.svg" alt="" />' : 'N'}</div>
       <div class="message-body">
-        ${message.triggerCommands?.length ? `<div class="message-trigger-list">${message.triggerCommands.map((command) => `<span>/${escapeHtml(command.command)}</span>`).join('')}</div>` : ''}
-        ${message.attachedFiles?.length ? `<div class="message-file-list">${message.attachedFiles.map((file) => `<span>${phIcon('paperclip')} ${escapeHtml(file.name)}</span>`).join('')}</div>` : ''}
-        <p>${escapeHtml(message.text)}</p>
-        ${message.usage ? `<small class="usage">${escapeHtml(message.model || state.model)} · input ${message.usage.input_tokens ?? 0} · output ${message.usage.output_tokens ?? 0}</small>` : ''}
-        ${renderActions(message)}
-        ${message.role === 'assistant' && !state.isSending ? `<button class="branch-message" data-branch-message="${message.id}">${icon('fork_right')} Branch from here</button>` : ''}
+        ${renderMessageBody(message)}
       </div>
     </article>
   `).join('');
@@ -2230,7 +2346,6 @@ function renderComposer({ project = false } = {}) {
           <select id="tone-select" aria-label="Choose thinking intensity">
             ${toneOptions.map((tone) => `<option ${tone === state.tone ? 'selected' : ''}>${tone}</option>`).join('')}
           </select>
-          <button class="icon-button" data-quick="Transcribe my voice:" aria-label="Voice">${phIcon('microphone')}</button>
           <button class="send-button ${project ? 'project-send' : 'chat-send'}" data-action="send-message" aria-label="${project ? 'Send' : 'Kirim'}" ${state.isSending ? 'disabled' : ''}>${state.isSending ? phIcon('stop') : project ? phIcon('paper-plane-right') : phIcon('arrow-up')}</button>
         </div>
       </div>
@@ -2284,7 +2399,7 @@ function renderProjectsView() {
       <button class="project-card" data-open-project="${project.id}" data-project-name="${escapeHtml(project.name.toLowerCase())}">
         <span>
           <strong>${escapeHtml(project.name)}</strong>
-          <p>${escapeHtml(project.memory || 'Project workspace with dedicated memory and instructions.')}</p>
+          <p>${escapeHtml(projectDescription(project))}</p>
         </span>
         <small>${count} chat${count === 1 ? '' : 's'} · Updated recently</small>
       </button>
@@ -2323,6 +2438,35 @@ function renderProjectMemoryPanel(project) {
   `;
 }
 
+function renderProjectActions(project) {
+  const isOpen = state.projectActionsOpenProjectId === project.id;
+  const isConfirmingDelete = state.projectDeleteConfirmId === project.id;
+  return `
+    <div class="project-actions">
+      <button class="icon-button project-actions-trigger" data-action="toggle-project-actions" aria-label="Project options" aria-expanded="${isOpen}">
+        ${phIcon('dots-three-vertical')}
+      </button>
+      ${isOpen ? `
+        <div class="project-actions-menu" role="menu" aria-label="Project options">
+          ${isConfirmingDelete ? `
+            <div class="project-delete-confirm">
+              <strong>Delete project?</strong>
+              <p>Chats stay in Recents without this project.</p>
+              <div>
+                <button role="menuitem" data-action="cancel-project-delete">Cancel</button>
+                <button class="danger-confirm" role="menuitem" data-action="confirm-project-delete">${phIcon('trash')}<span>Delete</span></button>
+              </div>
+            </div>
+          ` : `
+            <button role="menuitem" data-action="open-project-details">${phIcon('pencil-simple')}<span>Edit details</span></button>
+            <button class="danger" role="menuitem" data-action="request-project-delete">${phIcon('trash')}<span>Delete project</span></button>
+          `}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
 function renderProjectDetailView() {
   const project = projectById(state.activeProject) || allProjects()[0];
   if (!project) return renderProjectsView();
@@ -2336,7 +2480,7 @@ function renderProjectDetailView() {
       `).join('')
     : '<p class="empty-copy">No chats in this project yet.</p>';
   const instruction = projectInstruction(project);
-  const projectDescription = project.memory || project.systemPrompt || 'Project workspace with dedicated memory and instructions.';
+  const description = projectDescription(project);
   const projectFileList = projectFiles(project.id);
   const availableFileIds = new Set(projectFileList.map((file) => file.id));
   const selectedFileIds = new Set((state.selectedProjectFileIds || []).filter((id) => availableFileIds.has(id)));
@@ -2375,9 +2519,9 @@ function renderProjectDetailView() {
           <div class="project-title-row">
             <div class="project-title-copy">
               <h1>${escapeHtml(project.name)}</h1>
-              <p>${escapeHtml(projectDescription)}</p>
+              <p>${escapeHtml(description)}</p>
             </div>
-            <span><button class="icon-button">${icon('more_vert')}</button><button class="icon-button">${icon('push_pin')}</button></span>
+            ${renderProjectActions(project)}
           </div>
           ${renderComposer({ project: true })}
           <div class="project-history">${history}</div>
@@ -2678,6 +2822,36 @@ function renderProjectInstructionModal() {
   `;
 }
 
+function renderProjectDetailsModal() {
+  if (!state.projectDetailsModalOpen) return '';
+  const project = projectById(state.activeProject);
+  if (!project) return '';
+  return `
+    <div class="project-details-modal-backdrop">
+      <section class="project-details-modal" role="dialog" aria-modal="true" aria-labelledby="project-details-modal-title">
+        <header class="project-details-modal-header">
+          <h2 id="project-details-modal-title">Edit details</h2>
+          <button data-action="close-project-details" aria-label="Close project details">${phIcon('x')}</button>
+        </header>
+        <div class="project-details-modal-fields">
+          <label>
+            <span>Name</span>
+            <input id="project-details-name" value="${escapeHtml(project.name)}" autocomplete="off" />
+          </label>
+          <label>
+            <span>Description</span>
+            <textarea id="project-details-description">${escapeHtml(projectEditableDescription(project))}</textarea>
+          </label>
+        </div>
+        <footer class="project-details-modal-actions">
+          <button data-action="close-project-details">Cancel</button>
+          <button class="primary-dark" data-action="save-project-details">Save</button>
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
 function renderArtifactsView() {
   const activeArtifact = state.artifacts.find((artifact) => artifact.id === state.activeArtifact) || state.artifacts[0];
   const rows = state.artifacts.map((artifact) => `
@@ -2850,6 +3024,9 @@ async function openProjectDetail(projectId) {
   state.activeProject = projectId;
   state.view = 'project';
   state.projectMemoryEditing = false;
+  state.projectActionsOpenProjectId = null;
+  state.projectDeleteConfirmId = null;
+  state.projectDetailsModalOpen = false;
   state.projectFileError = '';
   state.selectedProjectFileIds = [];
   saveState();
@@ -3053,12 +3230,120 @@ function createNewProject() {
   const project = {
     id,
     name: `New project ${state.customProjects.length + 1}`,
+    description: '',
     systemPrompt: '',
     memory: '',
     color: 'neutral',
   };
   state.customProjects = [...state.customProjects, project];
   openProjectDetail(id);
+}
+
+function closeProjectActions() {
+  state.projectActionsOpenProjectId = null;
+  state.projectDeleteConfirmId = null;
+}
+
+function toggleProjectActions() {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  state.projectActionsOpenProjectId = state.projectActionsOpenProjectId === project.id ? null : project.id;
+  state.projectDeleteConfirmId = null;
+  render();
+}
+
+function openProjectDetailsModal() {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  closeProjectActions();
+  state.projectDetailsModalOpen = true;
+  render();
+  setTimeout(() => {
+    const input = document.querySelector('#project-details-name');
+    input?.focus();
+    input?.select();
+  }, 0);
+}
+
+function closeProjectDetailsModal() {
+  state.projectDetailsModalOpen = false;
+  render();
+}
+
+function saveProjectDetails() {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  const name = document.querySelector('#project-details-name')?.value.trim() || '';
+  if (!name) return;
+  const description = document.querySelector('#project-details-description')?.value.trim() || '';
+  const details = { name, description, memory: description };
+
+  if (isCustomProject(project.id)) {
+    state.customProjects = (state.customProjects || []).map((item) => (
+      item.id === project.id ? { ...item, ...details } : item
+    ));
+  } else {
+    state.projectOverrides = {
+      ...(state.projectOverrides || {}),
+      [project.id]: {
+        ...(state.projectOverrides?.[project.id] || {}),
+        ...details,
+      },
+    };
+  }
+
+  state.projectDetailsModalOpen = false;
+  state.projectActionsOpenProjectId = null;
+  state.projectDeleteConfirmId = null;
+  saveState({ immediate: true });
+  render();
+}
+
+function requestProjectDelete() {
+  const project = projectById(state.activeProject);
+  if (!project) return;
+  state.projectActionsOpenProjectId = project.id;
+  state.projectDeleteConfirmId = project.id;
+  render();
+}
+
+function cancelProjectDelete() {
+  state.projectDeleteConfirmId = null;
+  render();
+}
+
+async function deleteProject(projectId = state.activeProject) {
+  const project = projectById(projectId);
+  if (!project) return;
+  const files = projectFiles(project.id);
+  await Promise.allSettled(files.map((file) => deleteStoredFile(file.id)));
+
+  if (isCustomProject(project.id)) {
+    state.customProjects = (state.customProjects || []).filter((item) => item.id !== project.id);
+    state.deletedProjectIds = (state.deletedProjectIds || []).filter((id) => id !== project.id);
+  } else {
+    state.deletedProjectIds = [...new Set([...(state.deletedProjectIds || []), project.id])];
+  }
+
+  state.projectOverrides = removeRecordKey(state.projectOverrides, project.id);
+  state.projectInstructions = removeRecordKey(state.projectInstructions, project.id);
+  state.projectMemories = removeRecordKey(state.projectMemories, project.id);
+  state.projectFiles = removeRecordKey(state.projectFiles, project.id);
+  state.memoryUpdatedAt = {
+    ...state.memoryUpdatedAt,
+    projects: removeRecordKey(state.memoryUpdatedAt?.projects || {}, project.id),
+  };
+  state.conversations = state.conversations.map((conversation) => (
+    conversation.projectId === project.id ? { ...conversation, projectId: null } : conversation
+  ));
+  state.activeProject = null;
+  state.view = 'projects';
+  state.selectedProjectFileIds = [];
+  state.projectDetailsModalOpen = false;
+  state.projectActionsOpenProjectId = null;
+  state.projectDeleteConfirmId = null;
+  saveState({ immediate: true });
+  render();
 }
 
 function handleClick(event) {
@@ -3076,6 +3361,11 @@ function handleClick(event) {
   document.querySelectorAll('.skill-actions-disclosure[open]').forEach((menu) => {
     if (menu !== activeSkillActions) menu.removeAttribute('open');
   });
+  const activeProjectActions = event.target.closest('.project-actions');
+  if (!activeProjectActions && state.projectActionsOpenProjectId !== null) {
+    closeProjectActions();
+    render();
+  }
   if (!event.target.closest('.recent-item') && state.conversationMenuId !== null) {
     state.conversationMenuId = null;
     state.conversationRenameId = null;
@@ -3113,6 +3403,7 @@ function handleClick(event) {
   const apiKeyRemoveButton = event.target.closest('[data-api-key-remove]');
 
   if (event.target.classList.contains('conversation-project-modal-backdrop')) return closeConversationProjectPicker();
+  if (event.target.classList.contains('project-details-modal-backdrop')) return closeProjectDetailsModal();
   if (apiKeyAddButton) return addApiKeyRow(apiKeyAddButton.dataset.apiKeyAdd);
   if (apiKeyRemoveButton) {
     const [familyId, index] = apiKeyRemoveButton.dataset.apiKeyRemove.split(':');
@@ -3180,6 +3471,13 @@ function handleClick(event) {
   if (action === 'open-project-instructions') openProjectInstructionModal();
   if (action === 'close-project-instructions') closeProjectInstructionModal();
   if (action === 'save-project-instructions') saveProjectInstruction();
+  if (action === 'toggle-project-actions') toggleProjectActions();
+  if (action === 'open-project-details') openProjectDetailsModal();
+  if (action === 'close-project-details') closeProjectDetailsModal();
+  if (action === 'save-project-details') saveProjectDetails();
+  if (action === 'request-project-delete') requestProjectDelete();
+  if (action === 'cancel-project-delete') cancelProjectDelete();
+  if (action === 'confirm-project-delete') deleteProject();
   if (action === 'upload-project-files') document.querySelector('.project-file-upload-input')?.click();
   if (action === 'toggle-all-project-files') toggleAllProjectFileSelection();
   if (action === 'delete-selected-project-files') removeSelectedProjectFiles();
@@ -3317,7 +3615,9 @@ function handleKeydown(event) {
     submitMemoryEdit();
     return;
   }
-  if (event.key === 'Escape' && state.projectInstructionModalOpen) {
+  if (event.key === 'Escape' && state.projectDetailsModalOpen) {
+    closeProjectDetailsModal();
+  } else if (event.key === 'Escape' && state.projectInstructionModalOpen) {
     closeProjectInstructionModal();
   } else if (event.key === 'Escape' && state.skillModalMode) {
     closeSkillModal();
@@ -3332,6 +3632,9 @@ function handleKeydown(event) {
     state.conversationRenameDraft = '';
     state.conversationProjectPickerId = null;
     state.conversationDeleteConfirmId = null;
+    render();
+  } else if (event.key === 'Escape' && state.projectActionsOpenProjectId !== null) {
+    closeProjectActions();
     render();
   } else if (event.key === 'Escape' && state.memoryModalScope) closeMemoryModal();
   else if (event.key === 'Escape' && state.settingsOpen) setState({ settingsOpen: false });
@@ -3424,11 +3727,12 @@ function render() {
       ${renderSettingsModal()}
       ${renderMemoryModal()}
       ${renderSkillModal()}
+      ${renderProjectDetailsModal()}
       ${renderProjectInstructionModal()}
       ${renderConversationProjectPickerModal()}
     </div>
   `;
-  document.querySelector('#messages')?.scrollTo({ top: 999999 });
+  scrollChatToBottom();
 }
 
 app.addEventListener('click', handleClick);

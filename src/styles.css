@@ -6845,3 +6845,396 @@ body {
 .app-sidebar.collapsed .recent-project-marker {
   display: none;
 }
+
+.project-actions {
+  position: relative;
+  flex: 0 0 auto;
+  padding-top: 6px;
+}
+
+.project-actions-trigger {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  color: #171615;
+}
+
+.project-actions-trigger .ph {
+  font-size: 24px;
+}
+
+.project-actions-trigger:hover,
+.project-actions-trigger:focus-visible,
+.project-actions-trigger[aria-expanded="true"] {
+  background: #f1efea;
+}
+
+.project-actions-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 70;
+  display: grid;
+  gap: 4px;
+  min-width: 190px;
+  padding: 6px;
+  border: 1px solid #dfddd7;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 16px 36px rgb(31 29 25 / 14%);
+}
+
+.project-actions-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: #2f2e2a;
+  font-size: 14px;
+  text-align: left;
+}
+
+.project-actions-menu > button:hover,
+.project-actions-menu > button:focus-visible {
+  background: #f2f1ed;
+}
+
+.project-actions-menu > button.danger {
+  color: #b42318;
+}
+
+.project-actions-menu > button.danger:hover,
+.project-actions-menu > button.danger:focus-visible {
+  background: #fff1f1;
+}
+
+.project-actions-menu .ph {
+  flex: 0 0 auto;
+  font-size: 17px;
+}
+
+.project-delete-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+
+.project-delete-confirm strong {
+  color: #2f2e2a;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.project-delete-confirm p {
+  margin: 0;
+  color: #7a776f;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.project-delete-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.project-delete-confirm button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: #4a4842;
+  font-size: 13px;
+}
+
+.project-delete-confirm button:hover,
+.project-delete-confirm button:focus-visible {
+  background: #f2f1ed;
+}
+
+.project-delete-confirm .danger-confirm {
+  background: #b42318;
+  color: #fff;
+}
+
+.project-delete-confirm .danger-confirm:hover,
+.project-delete-confirm .danger-confirm:focus-visible {
+  background: #991b1b;
+}
+
+.project-details-modal-backdrop {
+  position: fixed;
+  z-index: 250;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgb(0 0 0 / 38%);
+  backdrop-filter: blur(4px);
+}
+
+.project-details-modal {
+  width: min(780px, 100%);
+  padding: 32px 36px 36px;
+  border: 1px solid #d9d9d6;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgb(0 0 0 / 24%);
+}
+
+.project-details-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+
+.project-details-modal-header h2 {
+  margin: 0;
+  color: #111;
+  font-size: 34px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.project-details-modal-header button {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  color: #202020;
+}
+
+.project-details-modal-header button:hover,
+.project-details-modal-header button:focus-visible {
+  background: #f2f1ed;
+}
+
+.project-details-modal-fields {
+  display: grid;
+  gap: 20px;
+}
+
+.project-details-modal-fields label {
+  display: grid;
+  gap: 8px;
+}
+
+.project-details-modal-fields label > span {
+  color: #171717;
+  font-size: 21px;
+  font-weight: 650;
+}
+
+.project-details-modal-fields input,
+.project-details-modal-fields textarea {
+  width: 100%;
+  border: 1px solid #d4d4d0;
+  border-radius: 12px;
+  outline: 0;
+  color: #161616;
+  font-size: 22px;
+  line-height: 1.4;
+}
+
+.project-details-modal-fields input {
+  height: 52px;
+  padding: 0 17px;
+}
+
+.project-details-modal-fields textarea {
+  min-height: 204px;
+  padding: 14px 17px;
+  resize: vertical;
+}
+
+.project-details-modal-fields input:focus,
+.project-details-modal-fields textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgb(37 99 235 / 16%);
+}
+
+.project-details-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 26px;
+}
+
+.project-details-modal-actions button {
+  min-height: 46px;
+  padding: 0 18px;
+  border: 1px solid #dedad3;
+  border-radius: 10px;
+  background: #fff;
+  color: #161616;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.project-details-modal-actions .primary-dark {
+  border-color: #111;
+  background: #111;
+  color: #fff;
+}
+
+@media (max-width: 760px) {
+  .project-details-modal-backdrop {
+    padding: 18px;
+  }
+
+  .project-details-modal {
+    padding: 24px;
+  }
+
+  .project-details-modal-header h2 {
+    font-size: 28px;
+  }
+
+  .project-details-modal-fields label > span,
+  .project-details-modal-fields input,
+  .project-details-modal-fields textarea,
+  .project-details-modal-actions button {
+    font-size: 16px;
+  }
+}
+
+/* Final chat overrides: keep the chat scrollbar at the viewport edge. */
+.chat-view {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: #bcb7af transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.chat-view::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat-view::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-view::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #bcb7af;
+  background-clip: content-box;
+}
+
+.chat-content.conversation-mode {
+  min-height: 100%;
+}
+
+.messages {
+  flex: 1 0 auto;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+
+.chat-content.conversation-mode > .composer {
+  position: sticky;
+  bottom: 18px;
+  z-index: 6;
+  margin-top: auto;
+}
+
+.message-text {
+  margin: 5px 0 0;
+  white-space: pre-wrap;
+}
+
+.message-markdown {
+  max-width: 100%;
+  color: #2f302d;
+  overflow-wrap: anywhere;
+}
+
+.message-markdown > :first-child {
+  margin-top: 0;
+}
+
+.message-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-markdown p,
+.message-markdown ul,
+.message-markdown ol,
+.message-markdown blockquote,
+.message-markdown pre,
+.message-markdown table {
+  margin: 0 0 14px;
+}
+
+.message-markdown ul,
+.message-markdown ol {
+  padding-left: 24px;
+}
+
+.message-markdown li + li {
+  margin-top: 4px;
+}
+
+.message-markdown code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: #f2f2f0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+}
+
+.message-markdown pre {
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid #e1e1de;
+  border-radius: 8px;
+  background: #f7f7f5;
+}
+
+.message-markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.message-markdown blockquote {
+  padding-left: 14px;
+  border-left: 3px solid #d4d4cf;
+  color: #62625d;
+}
+
+.message-markdown table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.message-markdown th,
+.message-markdown td {
+  padding: 8px 10px;
+  border: 1px solid #e1e1de;
+  text-align: left;
+}
+
+.message-markdown a {
+  color: #315f8c;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .chat-content.conversation-mode > .composer {
+    bottom: 12px;
+  }
+}

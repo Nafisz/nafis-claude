@@ -107,7 +107,7 @@
     "model": "ag/claude-sonnet-4-6",
     "tone": "Medium",
     "apiKeySaved": true,
-    "view": "projects",
+    "view": "chat",
     "settingsOpen": false,
     "settingsSection": "general",
     "sidebarCollapsed": false,
@@ -125,7 +125,7 @@
         "color": "neutral"
       }
     ],
-    "activeProject": "project-1781663087701",
+    "activeProject": null,
     "activeConversation": null,
     "activeArtifact": null,
     "activeSkill": "confluence",
@@ -148,9 +148,8 @@
     "projectFilesMigrated": true,
     "backendFilesMigrated": true,
     "conversationFiles": {
-      "1": [],
       "2": [],
-      "1781594904406": [],
+      "4": [],
       "1781596258113": [],
       "1781632804901": [],
       "null": []
@@ -196,22 +195,6 @@
         "updated": "Just now"
       },
       {
-        "id": 1781594904406,
-        "title": "Untitled",
-        "projectId": null,
-        "model": "ag/claude-sonnet-4-6",
-        "preview": "New session",
-        "updated": "Just now"
-      },
-      {
-        "id": 1,
-        "title": "Untitled",
-        "projectId": null,
-        "model": "ag/claude-sonnet-4-6",
-        "preview": "Standalone session",
-        "updated": "Just now"
-      },
-      {
         "id": 2,
         "title": "Simple AI game vs LLMs for NPCs",
         "projectId": "game",
@@ -237,14 +220,6 @@
       }
     ],
     "messagesByConversation": {
-      "1": [
-        {
-          "id": "1e6b8df3-1580-41ff-9328-4753cab97e0d",
-          "role": "assistant",
-          "text": "Good evening, siffan. I can help with chat, project memory, skills, and file artifacts.",
-          "createdAt": "2026-06-11T13:31:19.451Z"
-        }
-      ],
       "2": [
         {
           "id": "8df923cc-0f7b-4d78-bce5-c7dad99580e5",
@@ -267,14 +242,6 @@
           "role": "assistant",
           "text": "NovaX is active. I will keep the B2B edtech context in mind when answering.",
           "createdAt": "2026-06-11T13:31:19.451Z"
-        }
-      ],
-      "1781594904406": [
-        {
-          "id": "66a31c00-b7d5-4b9b-bec8-a03b0d57690d",
-          "role": "assistant",
-          "text": "How can I help?",
-          "createdAt": "2026-06-16T07:27:52.422Z"
         }
       ],
       "1781596258113": [
@@ -425,6 +392,6 @@
       "opus": []
     }
   },
-  "appStateUpdatedAt": "2026-06-17T02:45:11.164Z",
-  "updatedAt": "2026-06-17T02:45:11.164Z"
+  "appStateUpdatedAt": "2026-06-17T04:39:15.356Z",
+  "updatedAt": "2026-06-17T04:39:15.356Z"
 }
